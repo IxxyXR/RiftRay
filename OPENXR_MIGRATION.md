@@ -35,7 +35,8 @@ Last updated: 2026-07-31.
 | Visual/controller checks | Manual check remains | Confirm in-headset image, controls, HUD interaction |
 | Meta PC runtime | Manual check remains | Repeat runtime matrix with Meta selected |
 | Validation API layer | Optional development check remains | Run when the Khronos validation layer is installed |
-| Android build | Not started | Follow the separate Android plan below |
+| Android graphics binding | Boundary implemented | EGL/OpenGL ES adapter is compile-gated for Android |
+| Android application/build | Not started | Follow the separate Android plan below |
 
 “Complete in code” means the path builds and is connected to the application.
 It does not claim a controller or headset model was physically verified unless the
@@ -50,6 +51,7 @@ The migration was committed in reviewable stages:
 - `c9774e3` — WGL session, spaces, and stereo swapchain lifecycle.
 - `0f9dc29` — OpenXR frame rendering, actions, controller pose, and HUD.
 - `f0d75ec` — LibOVR removal, entry-point rename, clean builds, and tests.
+- `f39a414` — Platform graphics-binding interface plus WGL and Android EGL adapters.
 
 ## Source layout and ownership
 
@@ -285,7 +287,8 @@ The adapter interface must provide:
 
 ### Android work order
 
-1. Refactor WGL-specific code behind the adapter without changing desktop behavior.
+1. [x] Refactor WGL-specific requirements, session binding, and image enumeration
+   behind the adapter without changing desktop behavior.
 2. Add an Android CMake/Gradle target and OpenXR loader packaging.
 3. Add NativeActivity or GameActivity lifecycle and an EGL OpenGL ES context.
 4. Implement `XrGraphicsBindingOpenGLESAndroidKHR` and GLES swapchain images.
