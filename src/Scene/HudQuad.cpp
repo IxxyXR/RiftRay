@@ -1,6 +1,10 @@
 // HudQuad.cpp
 
 #include "HudQuad.h"
+
+#define XR_USE_GRAPHICS_API_OPENGL
+#include <openxr/openxr_platform.h>
+
 #include "Logger.h"
 #include "MatrixFunctions.h"
 #include <glm/glm.hpp>
@@ -10,97 +14,116 @@
 
 HudQuad::HudQuad()
 : m_QuadPoseCenter()
+, m_swapChain(XR_NULL_HANDLE)
+, m_session(XR_NULL_HANDLE)
 , m_showQuadInWorld(true)
+, m_fbo()
 , m_quadSize(1.f)
+, m_swapchainTextures()
+, m_imageAcquired(false)
+, m_acquiredImageIndex(0)
 , m_holding(false)
+, m_planePositionAtGrab(0.f)
 , m_hitPtPositionAtGrab(0.f)
 , m_hitPtTParam(-1.f)
 {
+    m_QuadPoseCenter.orientation.x = 0.129206583f;
+    m_QuadPoseCenter.orientation.y = 0.0310291424f;
+    m_QuadPoseCenter.orientation.z = 0.000810863741f;
+    m_QuadPoseCenter.orientation.w = -0.991131783f;
+    m_QuadPoseCenter.position = { 0.f, -.375f, -.75f };
 }
 
 HudQuad::~HudQuad()
 {
 }
 
-void HudQuad::initGL(ovrSession& session, ovrSizei sz)
+bool HudQuad::initGL(
+    XrSession session, int64_t format, uint32_t width, uint32_t height)
 {
-    m_session = session; ///@todo Make this a parameter to draw func
-
-    m_QuadPoseCenter.Orientation = //{ 0.f, 0.f, 0.f, 1.f };
-        { 0.129206583f, 0.0310291424f, 0.000810863741f, -0.991131783f };
-    m_QuadPoseCenter.Position = { 0.f, -.375f, -.75f };
-
-    const ovrSizei& bufferSize = { 600, 600 };
-
-    ovrTextureSwapChainDesc desc = {};
-    desc.Type = ovrTexture_2D;
-    desc.ArraySize = 1;
-    desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
-    desc.Width = bufferSize.w;
-    desc.Height = bufferSize.h;
-    desc.MipLevels = 1;
-    desc.SampleCount = 1;
-    desc.StaticImage = ovrFalse;
-
-    // Allocate the frameBuffer that will hold the scene, and then be
-    // re-rendered to the screen with distortion
-    if (ovr_CreateTextureSwapChainGL(session, &desc, &m_swapChain) == ovrSuccess)
+    m_session = session;
+    XrSwapchainCreateInfo createInfo = { XR_TYPE_SWAPCHAIN_CREATE_INFO };
+    createInfo.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT;
+    createInfo.format = format;
+    createInfo.sampleCount = 1;
+    createInfo.width = width;
+    createInfo.height = height;
+    createInfo.faceCount = 1;
+    createInfo.arraySize = 1;
+    createInfo.mipCount = 1;
+    XrResult result = xrCreateSwapchain(session, &createInfo, &m_swapChain);
+    if (XR_FAILED(result))
     {
-        int length = 0;
-        ovr_GetTextureSwapChainLength(session, m_swapChain, &length);
-
-        for (int i = 0; i < length; ++i)
-        {
-            GLuint chainTexId;
-            ovr_GetTextureSwapChainBufferGL(session, m_swapChain, i, &chainTexId);
-            glBindTexture(GL_TEXTURE_2D, chainTexId);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        }
-    }
-    else
-    {
-        LOG_ERROR("HudQuad::initGL Unable to create swap textures");
-        return;
+        LOG_ERROR("[RiftRay OpenXR] HudQuad swapchain creation failed: %d", result);
+        m_swapChain = XR_NULL_HANDLE;
+        return false;
     }
 
-    // Manually assemble swap FBO
-    FBO& swapfbo = m_fbo;
-    swapfbo.w = bufferSize.w;
-    swapfbo.h = bufferSize.h;
-    glGenFramebuffers(1, &swapfbo.id);
-    glBindFramebuffer(GL_FRAMEBUFFER, swapfbo.id);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, swapfbo.tex, 0);
+    uint32_t imageCount = 0;
+    result = xrEnumerateSwapchainImages(m_swapChain, 0, &imageCount, NULL);
+    if (XR_FAILED(result) || imageCount == 0)
+    {
+        LOG_ERROR("[RiftRay OpenXR] HudQuad has no swapchain images");
+        exitGL();
+        return false;
+    }
 
-    swapfbo.depth = 0;
-    glGenRenderbuffers(1, &swapfbo.depth);
-    glBindRenderbuffer(GL_RENDERBUFFER, swapfbo.depth);
-    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, bufferSize.w, bufferSize.h);
+    std::vector<XrSwapchainImageOpenGLKHR> images(
+        imageCount,
+        XrSwapchainImageOpenGLKHR{ XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR });
+    result = xrEnumerateSwapchainImages(
+        m_swapChain, imageCount, &imageCount,
+        reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+    if (XR_FAILED(result))
+    {
+        LOG_ERROR("[RiftRay OpenXR] HudQuad image enumeration failed: %d", result);
+        exitGL();
+        return false;
+    }
+    m_swapchainTextures.resize(imageCount);
+    for (uint32_t image = 0; image < imageCount; ++image)
+    {
+        m_swapchainTextures[image] = images[image].image;
+        glBindTexture(GL_TEXTURE_2D, images[image].image);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    }
+    glBindTexture(GL_TEXTURE_2D, 0);
+
+    m_fbo.w = width;
+    m_fbo.h = height;
+    glGenFramebuffers(1, &m_fbo.id);
+
+    glGenRenderbuffers(1, &m_fbo.depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, m_fbo.depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, width, height);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
-    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, swapfbo.depth);
-
-    // Check status
-    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE)
-    {
-        LOG_ERROR("Framebuffer status incomplete: %d %x", status, status);
-    }
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    return true;
 }
 
-void HudQuad::exitGL(ovrSession& session)
+void HudQuad::exitGL()
 {
-    ovr_DestroyTextureSwapChain(session, m_swapChain);
+    if (m_imageAcquired)
+        _FinalizeDrawToQuad();
     FBO& f = m_fbo;
-    glDeleteFramebuffers(1, &f.id), f.id = 0;
-    glDeleteRenderbuffers(1, &f.depth), f.depth = 0;
+    if (f.id != 0)
+        glDeleteFramebuffers(1, &f.id), f.id = 0;
+    if (f.depth != 0)
+        glDeleteRenderbuffers(1, &f.depth), f.depth = 0;
+    if (m_swapChain != XR_NULL_HANDLE)
+    {
+        xrDestroySwapchain(m_swapChain);
+        m_swapChain = XR_NULL_HANDLE;
+    }
+    m_swapchainTextures.clear();
+    m_session = XR_NULL_HANDLE;
 }
 
 ///@brief Called from the UI to indicate whether the user is holding and dragging
 /// the quad around in world space.
-void HudQuad::SetHoldingFlag(ovrPosef pose, bool f)
+void HudQuad::SetHoldingFlag(XrPosef pose, bool f)
 {
     if (f == false)
     {
@@ -108,8 +131,8 @@ void HudQuad::SetHoldingFlag(ovrPosef pose, bool f)
         return;
     }
     glm::vec3 ro, rd;
-    GetHMDEyeRayPosAndDir(pose, ro, rd);
-    const glm::mat4 quadposeMatrix = makeMatrixFromPose(GetPose());
+    GetXrEyeRayPosAndDir(pose, ro, rd);
+    const glm::mat4 quadposeMatrix = makeMatrixFromXrPose(GetPose());
 
     glm::vec2 planePt;
     float tParam;
@@ -121,32 +144,52 @@ void HudQuad::SetHoldingFlag(ovrPosef pose, bool f)
             // Just grabbed; store quad's pose at start
             m_holding = true;
             m_hitPtTParam = tParam;
-            const ovrVector3f& tx = m_QuadPoseCenter.Position;
+            const XrVector3f& tx = m_QuadPoseCenter.position;
             m_planePositionAtGrab = glm::vec3(tx.x, tx.y, tx.z);
             m_hitPtPositionAtGrab = ro + m_hitPtTParam*rd;
         }
     }
 }
 
-void HudQuad::_PrepareToDrawToQuad() const
+bool HudQuad::_PrepareToDrawToQuad()
 {
-    const FBO& f = m_fbo;
-    const ovrTextureSwapChain& chain = m_swapChain;
-    const ovrSession& session = m_session;
+    XrSwapchainImageAcquireInfo acquireInfo = {
+        XR_TYPE_SWAPCHAIN_IMAGE_ACQUIRE_INFO
+    };
+    XrResult result = xrAcquireSwapchainImage(
+        m_swapChain, &acquireInfo, &m_acquiredImageIndex);
+    if (XR_FAILED(result))
+        return false;
+    m_imageAcquired = true;
 
-    int curIndex;
-    ovr_GetTextureSwapChainCurrentIndex(session, chain, &curIndex);
-    GLuint curTexId;
-    ovr_GetTextureSwapChainBufferGL(session, chain, curIndex, &curTexId);
+    XrSwapchainImageWaitInfo waitInfo = { XR_TYPE_SWAPCHAIN_IMAGE_WAIT_INFO };
+    waitInfo.timeout = XR_INFINITE_DURATION;
+    result = xrWaitSwapchainImage(m_swapChain, &waitInfo);
+    if (XR_FAILED(result))
+    {
+        _FinalizeDrawToQuad();
+        return false;
+    }
 
-    glBindFramebuffer(GL_FRAMEBUFFER, f.id);
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, curTexId, 0);
-    glViewport(0, 0, f.w, f.h);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo.id);
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
+        m_swapchainTextures[m_acquiredImageIndex], 0);
+    glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_fbo.depth);
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    {
+        _FinalizeDrawToQuad();
+        return false;
+    }
+    glViewport(0, 0, m_fbo.w, m_fbo.h);
+    return true;
 }
 
 void HudQuad::DrawToQuad()
 {
-    _PrepareToDrawToQuad();
+    if (!_PrepareToDrawToQuad())
+        return;
     {
         const float g = .3f;
         glClearColor(g, g, g, 0.f);
@@ -157,9 +200,19 @@ void HudQuad::DrawToQuad()
     _FinalizeDrawToQuad();
 }
 
-void HudQuad::_FinalizeDrawToQuad()
+bool HudQuad::_FinalizeDrawToQuad()
 {
-    ovr_CommitTextureSwapChain(m_session, m_swapChain);
+    if (!m_imageAcquired)
+        return true;
+    glFramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    XrSwapchainImageReleaseInfo releaseInfo = {
+        XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO
+    };
+    const XrResult result = xrReleaseSwapchainImage(m_swapChain, &releaseInfo);
+    m_imageAcquired = false;
+    return XR_SUCCEEDED(result);
 }
 
 ///@param [out] planePtOut Intersection point on plane in local normalized coordinates
@@ -240,19 +293,19 @@ bool HudQuad::GetPaneRayIntersectionCoordinates(
 ///@brief Update the latest position of the HMD - used for grabbing the quad
 /// with a key then glancing while holding it to move the quad in space.
 ///@note Writes to m_layerQuad.QuadPoseCenter
-void HudQuad::SetHmdEyeRay(ovrPosef pose)
+void HudQuad::SetHmdEyeRay(XrPosef pose)
 {
     glm::vec3 ro, rd;
-    GetHMDEyeRayPosAndDir(pose, ro, rd);
+    GetXrEyeRayPosAndDir(pose, ro, rd);
 
     if (m_holding == true)
     {
         const glm::vec3 rayPt = ro + m_hitPtTParam * rd;
         const glm::vec3 movement = rayPt - m_hitPtPositionAtGrab;
         const glm::vec3 quadLocation = m_planePositionAtGrab + movement;
-        m_QuadPoseCenter.Position.x = quadLocation.x;
-        m_QuadPoseCenter.Position.y = quadLocation.y;
-        m_QuadPoseCenter.Position.z = quadLocation.z;
-        m_QuadPoseCenter.Orientation = pose.Orientation;
+        m_QuadPoseCenter.position.x = quadLocation.x;
+        m_QuadPoseCenter.position.y = quadLocation.y;
+        m_QuadPoseCenter.position.z = quadLocation.z;
+        m_QuadPoseCenter.orientation = pose.orientation;
     }
 }

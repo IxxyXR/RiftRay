@@ -20,14 +20,17 @@ MousingQuad::~MousingQuad()
 {
 }
 
-void MousingQuad::initGL(ovrSession& session, ovrSizei sz)
+bool MousingQuad::initGL(
+    XrSession session, int64_t format, uint32_t width, uint32_t height)
 {
-    HudQuad::initGL(session, sz);
+    if (!HudQuad::initGL(session, format, width, height))
+        return false;
 
     m_cursorShader.initProgram("basic");
     m_cursorShader.bindVAO();
     _InitPointerAttributes();
     glBindVertexArray(0);
+    return true;
 }
 
 void MousingQuad::_InitPointerAttributes()
@@ -62,14 +65,15 @@ void MousingQuad::_InitPointerAttributes()
     glEnableVertexAttribArray(m_cursorShader.GetAttrLoc("vColor"));
 }
 
-void MousingQuad::exitGL(ovrSession& session)
+void MousingQuad::exitGL()
 {
-    HudQuad::exitGL(session);
+    HudQuad::exitGL();
 }
 
 void MousingQuad::DrawToQuad()
 {
-    _PrepareToDrawToQuad();
+    if (!_PrepareToDrawToQuad())
+        return;
     {
         const float g = .05f;
         glClearColor(g, g, g, 0.f);
@@ -125,13 +129,13 @@ void MousingQuad::MouseMotion(int x, int y)
 
 ///@brief Called on every render, sets the mouse cursor location to where the left eye is pointing
 /// (without eye tracking, this is head-forward from the left eye's center).
-void MousingQuad::SetHmdEyeRay(ovrPosef pose)
+void MousingQuad::SetHmdEyeRay(XrPosef pose)
 {
     HudQuad::SetHmdEyeRay(pose);
 
     glm::vec3 ro, rd;
-    GetHMDEyeRayPosAndDir(pose, ro, rd);
-    const glm::mat4 quadposeMatrix = makeMatrixFromPose(GetPose());
+    GetXrEyeRayPosAndDir(pose, ro, rd);
+    const glm::mat4 quadposeMatrix = makeMatrixFromXrPose(GetPose());
 
     glm::vec2 planePt;
     float tParam;

@@ -1,6 +1,6 @@
-// main_glfw_ovrsdk08.cpp
+// main_glfw_openxr.cpp
 // With humongous thanks to cThrough 2014 (Daniel Dekkers)
-// Get a window created with GL context and OVR backend initialized,
+// Get a window created with GL context and OpenXR backend initialized,
 // then hand off display to the Scene class.
 
 #include <GL/glew.h>
@@ -9,8 +9,6 @@
 #  include <Windows.h>
 #endif
 #include <GLFW/glfw3.h>
-#include <OVR_CAPI.h>
-#include <OVR_CAPI_GL.h>
 #include <glm/gtc/type_ptr.hpp>
 #include <glm/gtc/matrix_transform.hpp>
 #include <stdio.h>
@@ -34,32 +32,18 @@
 #include "AntQuad.h"
 #include "MatrixFunctions.h"
 #include "AppDirectories.h"
+#include "XR/OpenXRBackend.h"
 
 Timer g_timer;
 double g_lastFrameTime = 0.0;
 GLFWwindow* g_pMirrorWindow = NULL;
 glm::ivec2 g_mirrorWindowSz(1200, 900);
 
-// OVR variables
-ovrSession g_session;
-ovrHmdDesc m_Hmd;
-long long g_frameIndex = 0;
-bool g_hmdVisible = false;
+OpenXRBackend g_openXR;
 bool g_hasHMD = false;
 
-ovrTextureSwapChain g_textureSwapChain[ovrEye_Count];
-ovrPosef m_eyePoses[ovrEye_Count]; // hold on to these for use outside of draw func
-FBO m_swapFBO[ovrEye_Count];
-
-ovrMirrorTexture g_mirrorTexture = nullptr;
-FBO m_mirrorFBO;
-ovrPerfHudMode m_perfHudMode = ovrPerfHud_Off;
-ovrInputState lastRemoteInputState = { 0 };
-ovrInputState lastXboxControllerInputState = { 0 };
-ovrInputState lastTouchInputState = { 0 };
+XrPosef m_eyePoses[2] = {};
 glm::vec3 m_touchMove = glm::vec3(0.f);
-
-FBO m_undistortedFBO;
 
 IScene* g_pScene = NULL;
 ShaderGalleryScene g_gallery;
@@ -92,13 +76,10 @@ float m_joystickYaw = 0.f;
 
 void TogglePerfHud()
 {
-    int phm = static_cast<int>(m_perfHudMode);
-    ++phm %= static_cast<int>(ovrPerfHud_Count);
-    m_perfHudMode = static_cast<ovrPerfHudMode>(phm);
-    ovr_SetInt(g_session, OVR_PERF_HUD_MODE, m_perfHudMode);
+    LOG_INFO("[RiftRay OpenXR] Runtime performance HUDs are controlled externally");
 }
 
-static void TW_CALL RecenterPoseCB(void*) { ovr_RecenterTrackingOrigin(g_session); }
+static void TW_CALL RecenterPoseCB(void*) { m_chassisPos = glm::vec3(0.f, 1.f, 0.f); m_chassisYaw = 0.f; }
 static void TW_CALL ResetPositionCB(void*) { m_chassisPos = glm::vec3(0.f, 1.f, 0.f); g_gallery.ResetPositionAndYaw(); }
 static void TW_CALL TogglePerfHUDCB(void*) { TogglePerfHud(); }
 static void TW_CALL ToggleShaderWorldCB(void*) { g_gallery.ToggleShaderWorld(); }
@@ -157,38 +138,11 @@ void initAnt()
 ///@brief Can be called before GL context is initialized.
 void initHMD()
 {
-    const ovrResult res = ovr_Initialize(nullptr);
-    if (ovrSuccess != res)
+    g_hasHMD = g_openXR.Initialize();
+    if (!g_hasHMD)
     {
-        LOG_ERROR("ovr_Initialize failed with code %d - Running in non-VR mode", res);
-        g_hasHMD = false;
-        return;
+        LOG_INFO("[RiftRay OpenXR] OpenXR unavailable; using monitor mode");
     }
-
-    ovrGraphicsLuid luid;
-    if (ovrSuccess != ovr_Create(&g_session, &luid))
-    {
-        LOG_ERROR("ovr_Create failed - No HMD detected. Running in non-VR mode");
-        g_hasHMD = false;
-        ovr_Shutdown();
-        return;
-    }
-
-    ovrSessionStatus sessionStatus;
-    ovr_GetSessionStatus(g_session, &sessionStatus);
-    if (sessionStatus.HmdPresent == false)
-    {
-        LOG_ERROR("No HMD Present - Running in non-VR mode");
-        g_hasHMD = false;
-        ovr_Destroy(g_session);
-        g_session = nullptr;
-        ovr_Shutdown();
-        return;
-    }
-
-    m_Hmd = ovr_GetHmdDesc(g_session);
-    g_hasHMD = true;
-    LOG_INFO("HMD detected: %s", m_Hmd.ProductName);
 }
 
 ///@brief Called once a GL context has been set up.
@@ -200,104 +154,18 @@ void initVR()
         return;
     }
 
-    const ovrHmdDesc& hmd = m_Hmd;
-
-    for (int eye = 0; eye < 2; ++eye)
+    if (!g_openXR.InitializeSession())
     {
-        const ovrSizei& bufferSize = ovr_GetFovTextureSize(g_session, ovrEyeType(eye), hmd.DefaultEyeFov[eye], 1.f);
-        LOG_INFO("Eye %d tex : %dx%d @ ()", eye, bufferSize.w, bufferSize.h);
-
-        ovrTextureSwapChain textureSwapChain = 0;
-        ovrTextureSwapChainDesc desc = {};
-        desc.Type = ovrTexture_2D;
-        desc.ArraySize = 1;
-        desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
-        desc.Width = bufferSize.w;
-        desc.Height = bufferSize.h;
-        desc.MipLevels = 1;
-        desc.SampleCount = 1;
-        desc.StaticImage = ovrFalse;
-
-        // Allocate the frameBuffer that will hold the scene, and then be
-        // re-rendered to the screen with distortion
-        ovrTextureSwapChain& chain = g_textureSwapChain[eye];
-        if (ovr_CreateTextureSwapChainGL(g_session, &desc, &chain) == ovrSuccess)
-        {
-            int length = 0;
-            ovr_GetTextureSwapChainLength(g_session, chain, &length);
-
-            for (int i = 0; i < length; ++i)
-            {
-                GLuint chainTexId;
-                ovr_GetTextureSwapChainBufferGL(g_session, chain, i, &chainTexId);
-                glBindTexture(GL_TEXTURE_2D, chainTexId);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-                glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            }
-        }
-        else
-        {
-            LOG_ERROR("Unable to create swap textures");
-            return;
-        }
-
-        // Manually assemble swap FBO
-        FBO& swapfbo = m_swapFBO[eye];
-        swapfbo.w = bufferSize.w;
-        swapfbo.h = bufferSize.h;
-        glGenFramebuffers(1, &swapfbo.id);
-        glBindFramebuffer(GL_FRAMEBUFFER, swapfbo.id);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, swapfbo.tex, 0);
-
-        swapfbo.depth = 0;
-        glGenRenderbuffers(1, &swapfbo.depth);
-        glBindRenderbuffer(GL_RENDERBUFFER, swapfbo.depth);
-        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, bufferSize.w, bufferSize.h);
-        glBindRenderbuffer(GL_RENDERBUFFER, 0);
-        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, swapfbo.depth);
-
-        // Check status
-        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-        if (status != GL_FRAMEBUFFER_COMPLETE)
-        {
-            LOG_ERROR("Framebuffer status incomplete: %d %x", status, status);
-        }
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    }
-
-    // Initialize mirror texture
-    ovrMirrorTextureDesc desc;
-    memset(&desc, 0, sizeof(desc));
-    desc.Width = g_mirrorWindowSz.x;
-    desc.Height = g_mirrorWindowSz.y;
-    desc.Format = OVR_FORMAT_R8G8B8A8_UNORM_SRGB;
-
-    const ovrResult result = ovr_CreateMirrorTextureGL(g_session, &desc, &g_mirrorTexture);
-    if (!OVR_SUCCESS(result))
-    {
-        LOG_ERROR("Unable to create mirror texture");
+        LOG_ERROR("[RiftRay OpenXR] Session initialization failed; using monitor mode");
+        g_hasHMD = false;
         return;
     }
 
-    // Manually assemble mirror FBO
-    m_mirrorFBO.w = g_mirrorWindowSz.x;
-    m_mirrorFBO.h = g_mirrorWindowSz.y;
-    glGenFramebuffers(1, &m_mirrorFBO.id);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_mirrorFBO.id);
-    GLuint texId;
-    ovr_GetMirrorTextureBufferGL(g_session, g_mirrorTexture, &texId);
-    m_mirrorFBO.tex = texId;
-    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, m_mirrorFBO.tex, 0);
-
-    const ovrSizei sz = { 600, 600 };
-    g_tweakbarQuad.initGL(g_session, sz);
-
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindTexture(GL_TEXTURE_2D, 0);
-
-    g_hmdVisible = true;
+    if (!g_tweakbarQuad.initGL(
+        g_openXR.GetSession(), g_openXR.GetColorFormat(), 600, 600))
+    {
+        LOG_ERROR("[RiftRay OpenXR] HUD quad initialization failed");
+    }
 }
 
 glm::mat4 makeWorldToChassisMatrix()
@@ -305,57 +173,19 @@ glm::mat4 makeWorldToChassisMatrix()
     return makeChassisMatrix_glm(m_chassisYaw, 0.f, 0.f, m_chassisPos);
 }
 
-void storeHmdPose(const ovrPosef& eyePose)
+void storeHmdPose(const XrPosef& eyePose)
 {
-    m_hmdRo.x = eyePose.Position.x + m_chassisPos.x;
-    m_hmdRo.y = eyePose.Position.y + m_chassisPos.y;
-    m_hmdRo.z = eyePose.Position.z + m_chassisPos.z;
+    m_hmdRo.x = eyePose.position.x + m_chassisPos.x;
+    m_hmdRo.y = eyePose.position.y + m_chassisPos.y;
+    m_hmdRo.z = eyePose.position.z + m_chassisPos.z;
 
-    const glm::mat4 w2eye = makeWorldToChassisMatrix() * makeMatrixFromPose(eyePose, m_headSize);
+    const glm::mat4 w2eye =
+        makeWorldToChassisMatrix() * makeMatrixFromXrPose(eyePose, m_headSize);
     const glm::vec4 lookFwd(0.f, 0.f, -1.f, 0.f);
     const glm::vec4 rotvec = w2eye * lookFwd;
     m_hmdRd.x = rotvec.x;
     m_hmdRd.y = rotvec.y;
     m_hmdRd.z = rotvec.z;
-}
-
-bool CheckForTapOnHmd(const ovrVector3f& v)
-{
-#if 0
-    // Arbitrary value and representing moderate tap on the side of the DK2 Rift.
-    // When HMD is stationary, gravity alone should yield ~= 9.8^2 == 96.04
-    const float lenSq = v.LengthSq();
-    const float tapThreshold = 250.f;
-    if (lenSq > tapThreshold)
-    {
-        // Limit tapping rate
-        static double lastTapTime = 0.0;
-        if (ovr_GetTimeInSeconds() - lastTapTime > 0.5)
-        {
-            lastTapTime = ovr_GetTimeInSeconds();
-            g_gallery.ToggleShaderWorld();
-            return true;
-        }
-    }
-#endif
-    return false;
-}
-
-void BlitLeftEyeRenderToUndistortedMirrorTexture()
-{
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, m_swapFBO[0].id);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, m_undistortedFBO.id);
-    glViewport(0, 0, m_undistortedFBO.w, m_undistortedFBO.h);
-    const float fboScale = 1.f; //m_fboScale
-    glBlitFramebuffer(
-        0, static_cast<int>(static_cast<float>(m_swapFBO[0].h)*fboScale),
-        static_cast<int>(static_cast<float>(m_swapFBO[0].w)*fboScale), 0, ///@todo Fix for FBO scaling
-        0, 0, m_undistortedFBO.w, m_undistortedFBO.h,
-        GL_COLOR_BUFFER_BIT, GL_NEAREST);
-    glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
-    glBindFramebuffer(GL_FRAMEBUFFER, m_swapFBO[0].id);
 }
 
 // Display the old-fashioned way, to a monoscopic viewport on a desktop monitor.
@@ -382,7 +212,7 @@ void displayMonitor()
     m_hmdRd = glm::vec3(0.f, 0.f, -1.f);
 }
 
-// Display to an HMD with OVR SDK backend.
+// Display to an HMD through the active OpenXR runtime.
 void displayHMD()
 {
     if (!g_hasHMD)
@@ -391,217 +221,128 @@ void displayHMD()
         return;
     }
 
-    ovrSessionStatus sessionStatus;
-    ovr_GetSessionStatus(g_session, &sessionStatus);
-
-    if (sessionStatus.HmdPresent == false)
+    bool shouldExit = false;
+    if (!g_openXR.PollEvents(shouldExit))
     {
         displayMonitor();
         return;
     }
-
-    const ovrHmdDesc& hmdDesc = m_Hmd;
-    double sensorSampleTime; // sensorSampleTime is fed into the layer later
-    if (g_hmdVisible)
-    {
-        // Call ovr_GetRenderDesc each frame to get the ovrEyeRenderDesc, as the returned values (e.g. HmdToEyeOffset) may change at runtime.
-        ovrEyeRenderDesc eyeRenderDesc[2];
-        eyeRenderDesc[0] = ovr_GetRenderDesc(g_session, ovrEye_Left, hmdDesc.DefaultEyeFov[0]);
-        eyeRenderDesc[1] = ovr_GetRenderDesc(g_session, ovrEye_Right, hmdDesc.DefaultEyeFov[1]);
-
-        // Get eye poses, feeding in correct IPD offset
-        ovrPosef HmdToEyeOffset[2] = {
-            eyeRenderDesc[0].HmdToEyePose,
-            eyeRenderDesc[1].HmdToEyePose };
-#if 0
-        // Get both eye poses simultaneously, with IPD offset already included.
-        double displayMidpointSeconds = ovr_GetPredictedDisplayTime(g_session, 0);
-        ovrTrackingState hmdState = ovr_GetTrackingState(g_session, displayMidpointSeconds, ovrTrue);
-        ovr_CalcEyePoses(hmdState.HeadPose.ThePose, HmdToEyeOffset, m_eyePoses);
-#else
-        ovr_GetEyePoses(g_session, g_frameIndex, ovrTrue, HmdToEyeOffset, m_eyePoses, &sensorSampleTime);
-#endif
-        storeHmdPose(m_eyePoses[0]);
-
-        for (int eye = 0; eye < 2; ++eye)
-        {
-            const FBO& swapfbo = m_swapFBO[eye];
-            const ovrTextureSwapChain& chain = g_textureSwapChain[eye];
-
-            int curIndex;
-            ovr_GetTextureSwapChainCurrentIndex(g_session, chain, &curIndex);
-            GLuint curTexId;
-            ovr_GetTextureSwapChainBufferGL(g_session, chain, curIndex, &curTexId);
-
-            glBindFramebuffer(GL_FRAMEBUFFER, swapfbo.id);
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, curTexId, 0);
-
-            glViewport(0, 0, swapfbo.w, swapfbo.h);
-            glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-            glEnable(GL_FRAMEBUFFER_SRGB);
-
-            {
-                glClearColor(0.3f, 0.3f, 0.3f, 0.f);
-                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-
-                const ovrSizei& downSize = ovr_GetFovTextureSize(g_session, ovrEyeType(eye), hmdDesc.DefaultEyeFov[eye], m_fboScale);
-                ovrRecti vp = { 0, 0, downSize.w, downSize.h };
-                const int texh = swapfbo.h;
-                vp.Pos.y = (texh - vp.Size.h) / 2;
-                glViewport(vp.Pos.x, vp.Pos.y, vp.Size.w, vp.Size.h);
-
-                // Cinemascope - letterbox bars scissoring off pixels above and below vp center
-                const float hc = .5f * m_cinemaScope;
-                const int scisPx = static_cast<int>(hc * static_cast<float>(vp.Size.h));
-                ovrRecti sp = vp;
-                sp.Pos.y += scisPx;
-                sp.Size.h -= 2 * scisPx;
-                glScissor(sp.Pos.x, sp.Pos.y, sp.Size.w, sp.Size.h);
-                glEnable(GL_SCISSOR_TEST);
-                glEnable(GL_DEPTH_TEST);
-
-                // Render the scene for the current eye
-                const ovrPosef& eyePose = m_eyePoses[eye];
-                const glm::mat4 mview =
-                    makeWorldToChassisMatrix() *
-                    makeMatrixFromPose(eyePose, m_headSize);
-                const ovrMatrix4f ovrproj = ovrMatrix4f_Projection(hmdDesc.DefaultEyeFov[eye], 0.2f, 1000.0f, ovrProjection_None);
-                const glm::mat4 proj = makeGlmMatrixFromOvrMatrix(ovrproj);
-                g_pScene->RenderForOneEye(glm::value_ptr(glm::inverse(mview)), glm::value_ptr(proj));
-
-                const ovrTextureSwapChain& chain = g_textureSwapChain[eye];
-                const ovrResult commitres = ovr_CommitTextureSwapChain(g_session, chain);
-                if (!OVR_SUCCESS(commitres))
-                {
-                    LOG_ERROR("ovr_CommitTextureSwapChain returned %d", commitres);
-                    return;
-                }
-            }
-            glDisable(GL_SCISSOR_TEST);
-
-            // Grab a copy of the left eye's undistorted render output for presentation
-            // to the desktop window instead of the barrel distorted mirror texture.
-            // This blit, while cheap, could cost some framerate to the HMD.
-            // An over-the-shoulder view is another option, at a greater performance cost.
-            if (0)
-            {
-                if (eye == ovrEyeType::ovrEye_Left)
-                {
-                    BlitLeftEyeRenderToUndistortedMirrorTexture();
-                }
-            }
-
-            glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
-            glBindFramebuffer(GL_FRAMEBUFFER, 0);
-        }
-    }
-
-    std::vector<const ovrLayerHeader*> layerHeaders;
-    {
-        // Do distortion rendering, Present and flush/sync
-        ovrLayerEyeFov ld;
-        ld.Header.Type = ovrLayerType_EyeFov;
-        ld.Header.Flags = ovrLayerFlag_TextureOriginAtBottomLeft; // Because OpenGL.
-
-        for (int eye = 0; eye < 2; ++eye)
-        {
-            const FBO& swapfbo = m_swapFBO[eye];
-            const ovrTextureSwapChain& chain = g_textureSwapChain[eye];
-
-            ld.ColorTexture[eye] = chain;
-
-            const ovrSizei& downSize = ovr_GetFovTextureSize(g_session, ovrEyeType(eye), hmdDesc.DefaultEyeFov[eye], m_fboScale);
-            ovrRecti vp = { 0, 0, downSize.w, downSize.h };
-            const int texh = swapfbo.h;
-            vp.Pos.y = (texh - vp.Size.h) / 2;
-
-            ld.Viewport[eye] = vp;
-            ld.Fov[eye] = hmdDesc.DefaultEyeFov[eye];
-            ld.RenderPose[eye] = m_eyePoses[eye];
-            ld.SensorSampleTime = sensorSampleTime;
-        }
-        layerHeaders.push_back(&ld.Header);
-
-        // Submit layers to HMD for display
-        ovrLayerQuad ql;
-        if (g_tweakbarQuad.m_showQuadInWorld)
-        {
-            ql.Header.Type = ovrLayerType_Quad;
-            ql.Header.Flags = ovrLayerFlag_TextureOriginAtBottomLeft; // Because OpenGL.
-
-            ql.ColorTexture = g_tweakbarQuad.m_swapChain;
-            ovrRecti vp;
-            vp.Pos.x = 0;
-            vp.Pos.y = 0;
-            vp.Size.w = 600; ///@todo
-            vp.Size.h = 600; ///@todo
-            ql.Viewport = vp;
-            ql.QuadPoseCenter = g_tweakbarQuad.m_QuadPoseCenter;
-            ql.QuadSize = { 1.f, 1.f }; ///@todo Pass in
-
-            g_tweakbarQuad.SetHmdEyeRay(m_eyePoses[ovrEyeType::ovrEye_Left]); // Writes to m_layerQuad.QuadPoseCenter
-            g_tweakbarQuad.DrawToQuad();
-            layerHeaders.push_back(&ql.Header);
-        }
-    }
-
-#if 0
-    ovrViewScaleDesc viewScaleDesc;
-    viewScaleDesc.HmdToEyeOffset[0] = m_eyeOffsets[0];
-    viewScaleDesc.HmdToEyeOffset[1] = m_eyeOffsets[1];
-    viewScaleDesc.HmdSpaceToWorldScaleInMeters = 1.f;
-#endif
-
-    const ovrResult result = ovr_SubmitFrame(g_session, g_frameIndex, nullptr, &layerHeaders[0], layerHeaders.size());
-    if (result == ovrSuccess)
-    {
-        g_hmdVisible = true;
-    }
-    else if (result == ovrSuccess_NotVisible)
-    {
-        g_hmdVisible = false;
-        ///@todo Enter a lower-power, polling "no focus/HMD not worn" mode
-    }
-    else if (result == ovrError_DisplayLost)
-    {
-        LOG_INFO("ovr_SubmitFrame returned ovrError_DisplayLost");
-        g_hmdVisible = false;
-        ///@todo Tear down textures and session and re-create
-    }
-    else
-    {
-        LOG_INFO("ovr_SubmitFrame returned %d", result);
-        //g_hmdVisible = false;
-    }
-
-    // Handle OVR session events
-    ovr_GetSessionStatus(g_session, &sessionStatus);
-    if (sessionStatus.ShouldQuit)
+    if (shouldExit)
     {
         glfwSetWindowShouldClose(g_pMirrorWindow, 1);
+        return;
     }
-    if (sessionStatus.ShouldRecenter)
-    {
-        ovr_RecenterTrackingOrigin(g_session);
-    }
-
-    // Blit mirror texture to monitor window
-    if (g_hmdVisible)
-    {
-        glViewport(0, 0, g_mirrorWindowSz.x, g_mirrorWindowSz.y);
-        const FBO& srcFBO = m_mirrorFBO;
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, srcFBO.id);
-        glBlitFramebuffer(
-            0, srcFBO.h, srcFBO.w, 0,
-            0, 0, g_mirrorWindowSz.x, g_mirrorWindowSz.y,
-            GL_COLOR_BUFFER_BIT, GL_NEAREST);
-        glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
-    }
-    else
+    if (!g_openXR.IsSessionRunning())
     {
         displayMonitor();
+        return;
     }
-    ++g_frameIndex;
+    if (!g_openXR.BeginFrame())
+    {
+        displayMonitor();
+        return;
+    }
+    g_openXR.SyncInput();
+    if (!g_openXR.ShouldRender() || !g_openXR.LocateViews())
+    {
+        g_openXR.EndFrame(NULL, false);
+        displayMonitor();
+        return;
+    }
+
+    const uint32_t viewCount = g_openXR.GetViewCount();
+    for (uint32_t eye = 0; eye < 2; ++eye)
+        m_eyePoses[eye] = g_openXR.GetView(eye).pose;
+    storeHmdPose(m_eyePoses[0]);
+
+    bool renderedAllViews = true;
+    for (uint32_t eye = 0; eye < viewCount; ++eye)
+    {
+        const XrView& view = g_openXR.GetView(eye);
+        if (!g_openXR.BeginView(eye))
+        {
+            renderedAllViews = false;
+            break;
+        }
+
+        const FBO& framebuffer = g_openXR.GetViewFramebuffer(eye);
+        const int fullWidth = static_cast<int>(g_openXR.GetViewWidth(eye));
+        const int fullHeight = static_cast<int>(g_openXR.GetViewHeight(eye));
+        const float scale = std::max(.15f, std::min(1.f, m_fboScale));
+        const int renderWidth = std::max(1, static_cast<int>(fullWidth * scale));
+        const int renderHeight = std::max(1, static_cast<int>(fullHeight * scale));
+        const int renderX = (fullWidth - renderWidth) / 2;
+        const int renderY = (fullHeight - renderHeight) / 2;
+
+        glViewport(0, 0, fullWidth, fullHeight);
+        glClearColor(.3f, .3f, .3f, 0.f);
+        glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_FRAMEBUFFER_SRGB);
+        glViewport(renderX, renderY, renderWidth, renderHeight);
+
+        const int scissorInset = static_cast<int>(
+            .5f * m_cinemaScope * static_cast<float>(renderHeight));
+        glScissor(
+            renderX, renderY + scissorInset,
+            renderWidth, std::max(1, renderHeight - 2 * scissorInset));
+        glEnable(GL_SCISSOR_TEST);
+        glEnable(GL_DEPTH_TEST);
+
+        const glm::mat4 modelView =
+            makeWorldToChassisMatrix() *
+            makeMatrixFromXrPose(view.pose, m_headSize);
+        const glm::mat4 projection =
+            makeProjectionFromXrFov(view.fov, .2f, 1000.f);
+        g_pScene->RenderForOneEye(
+            glm::value_ptr(glm::inverse(modelView)),
+            glm::value_ptr(projection));
+        glDisable(GL_SCISSOR_TEST);
+
+        g_openXR.SetViewRenderRect(
+            eye, renderX, renderY, renderWidth, renderHeight);
+
+        if (eye == 0)
+        {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, framebuffer.id);
+            glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+            glBlitFramebuffer(
+                renderX, renderY, renderX + renderWidth, renderY + renderHeight,
+                0, 0, g_mirrorWindowSz.x, g_mirrorWindowSz.y,
+                GL_COLOR_BUFFER_BIT, GL_LINEAR);
+        }
+
+        if (!g_openXR.EndView(eye))
+        {
+            renderedAllViews = false;
+            break;
+        }
+    }
+
+    XrCompositionLayerQuad quadLayer = { XR_TYPE_COMPOSITION_LAYER_QUAD };
+    const XrCompositionLayerQuad* quadLayerPointer = NULL;
+    if (renderedAllViews && g_tweakbarQuad.m_showQuadInWorld &&
+        g_tweakbarQuad.GetSwapchain() != XR_NULL_HANDLE)
+    {
+        const OpenXRBackend::InputState& input = g_openXR.GetInputState();
+        g_tweakbarQuad.SetHmdEyeRay(
+            input.aimPoseValid ? input.aimPose : m_eyePoses[0]);
+        g_tweakbarQuad.DrawToQuad();
+        quadLayer.layerFlags = XR_COMPOSITION_LAYER_BLEND_TEXTURE_SOURCE_ALPHA_BIT;
+        quadLayer.space = g_openXR.GetAppSpace();
+        quadLayer.eyeVisibility = XR_EYE_VISIBILITY_BOTH;
+        quadLayer.subImage.swapchain = g_tweakbarQuad.GetSwapchain();
+        quadLayer.subImage.imageRect.offset = { 0, 0 };
+        quadLayer.subImage.imageRect.extent = {
+            static_cast<int32_t>(g_tweakbarQuad.GetWidth()),
+            static_cast<int32_t>(g_tweakbarQuad.GetHeight()) };
+        quadLayer.subImage.imageArrayIndex = 0;
+        quadLayer.pose = g_tweakbarQuad.GetPose();
+        quadLayer.size = { 1.f, 1.f };
+        quadLayerPointer = &quadLayer;
+    }
+    g_openXR.EndFrame(quadLayerPointer, renderedAllViews);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    glViewport(0, 0, g_mirrorWindowSz.x, g_mirrorWindowSz.y);
 
 #ifdef USE_ANTTWEAKBAR
     if (g_tweakbarQuad.m_showQuadInWorld)
@@ -613,20 +354,10 @@ void displayHMD()
 
 void exitVR()
 {
-    if (!g_hasHMD)
-        return;
-
-    ///@todo delete swap fbos
-    //_DestroySwapTextures();
-
-    for (int eye = 0; eye < 2; ++eye)
-    {
-        ovrTextureSwapChain& chain = g_textureSwapChain[eye];
-        ovr_DestroyTextureSwapChain(g_session, chain);
-    }
-
-    ovr_Destroy(g_session);
-    ovr_Shutdown();
+    if (g_tweakbarQuad.GetSwapchain() != XR_NULL_HANDLE)
+        g_tweakbarQuad.exitGL();
+    g_openXR.Shutdown();
+    g_hasHMD = false;
 }
 
 static void ErrorCallback(int p_Error, const char* p_Description)
@@ -685,8 +416,7 @@ void keyboard(GLFWwindow* pWindow, int key, int codes, int action, int mods)
             break;
 
         case GLFW_KEY_SPACE:
-            if (g_hasHMD)
-                ovr_RecenterTrackingOrigin(g_session);
+            RecenterPoseCB(NULL);
             break;
 
         case GLFW_KEY_R:
@@ -882,7 +612,7 @@ void joystick_XboxController(
             }
             if (i == 4) // Left Bumper
             {
-                ovr_RecenterTrackingOrigin(g_session);
+                RecenterPoseCB(NULL);
             }
             if (i == 5) // Right Bumper
             {
@@ -1017,7 +747,8 @@ void mouseWheel(GLFWwindow* pWindow, double x, double y)
     }
 }
 
-// OVR Remote controller input
+#if 0
+// Legacy LibOVR input retained only until the OpenXR action checkpoint compiles.
 void HandleRemote()
 {
     if (!g_hasHMD)
@@ -1289,6 +1020,65 @@ void HandleTouchControllers()
     lastTouchInputState = currentTouchInputState;
 }
 
+#endif
+
+void HandleOpenXRInput()
+{
+    if (!g_hasHMD)
+        return;
+
+    static OpenXRBackend::InputState previous;
+    const OpenXRBackend::InputState& current = g_openXR.GetInputState();
+
+    if (current.toggleShader && !previous.toggleShader)
+        g_gallery.ToggleShaderWorld();
+    if (current.toggleHud && !previous.toggleHud)
+        g_tweakbarQuad.m_showQuadInWorld = !g_tweakbarQuad.m_showQuadInWorld;
+    if (current.click != previous.click)
+        g_tweakbarQuad.MouseClick(current.click ? 1 : 0);
+    if (current.reset && !previous.reset)
+        m_chassisPos = glm::vec3(0.f, 1.f, 0.f);
+    if (current.menu && !previous.menu)
+        RecenterPoseCB(NULL);
+
+    const XrPosef pointerPose = current.aimPoseValid
+        ? current.aimPose : m_eyePoses[0];
+    if (current.hold != previous.hold)
+        g_tweakbarQuad.SetHoldingFlag(pointerPose, current.hold);
+    if (current.aimPoseValid)
+        g_tweakbarQuad.SetHmdEyeRay(current.aimPose);
+
+    const float deadzone = .2f;
+    glm::vec3 touchMove(0.f);
+    if (fabs(current.move.x) > deadzone || fabs(current.move.y) > deadzone)
+        touchMove += glm::vec3(current.move.x, 0.f, -current.move.y);
+    if (current.leftTrigger > .3f)
+        touchMove.y -= current.leftTrigger;
+    if (current.rightTrigger > .3f)
+        touchMove.y += current.rightTrigger;
+    m_touchMove = touchMove;
+
+    if (!m_snapTurn)
+    {
+        m_joystickYaw = fabs(current.turn.x) > deadzone
+            ? current.turn.x * .75f : 0.f;
+    }
+    else
+    {
+        static bool snapTurnReady = true;
+        if (fabs(current.turn.x) > .7f && snapTurnReady)
+        {
+            m_chassisYaw += current.turn.x > 0.f ? .3f : -.3f;
+            snapTurnReady = false;
+        }
+        else if (fabs(current.turn.x) < deadzone)
+        {
+            snapTurnReady = true;
+        }
+    }
+    previous = current;
+}
+
 void timestep()
 {
     const double absT = g_timer.seconds();
@@ -1303,16 +1093,8 @@ void timestep()
     const glm::vec3 move_dt = (m_keyboardMove + m_joystickMove + m_remoteMove + m_touchMove) * m_headSize * static_cast<float>(dt);
     glm::mat4 moveTxfm = makeWorldToChassisMatrix();
 
-    // Move in the direction the viewer is facing if HMD is worn.
-    ovrSessionStatus sessionStatus;
-    if (g_hasHMD)
-    {
-        ovr_GetSessionStatus(g_session, &sessionStatus);
-        if (sessionStatus.HmdMounted == true)
-        {
-            moveTxfm *= makeMatrixFromPose(m_eyePoses[0], m_headSize);
-        }
-    }
+    if (g_hasHMD && g_openXR.IsSessionRunning())
+        moveTxfm *= makeMatrixFromXrPose(m_eyePoses[0], m_headSize);
 
     const glm::vec4 mv4 = moveTxfm * glm::vec4(move_dt, 0.f);
     m_chassisPos += glm::vec3(mv4);
@@ -1324,9 +1106,7 @@ void timestep()
         m_chassisYaw += (m_keyboardYaw + m_joystickYaw) * static_cast<float>(dt);
     }
 
-    HandleRemote();
-    HandleXboxController();
-    HandleTouchControllers();
+    HandleOpenXRInput();
 }
 
 void resize(GLFWwindow* pWindow, int w, int h)

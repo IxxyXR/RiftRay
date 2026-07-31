@@ -18,12 +18,12 @@ public:
     AntQuad();
     virtual ~AntQuad();
 
-    virtual void initGL(ovrSession& session, ovrSizei sz);
-    virtual void exitGL(ovrSession& session);
+    virtual bool initGL(XrSession session, int64_t format, uint32_t width, uint32_t height);
+    virtual void exitGL();
     virtual void DrawToQuad();
     virtual void MouseClick(int state);
     virtual void MouseMotion(int x, int y);
-    virtual void SetHmdEyeRay(ovrPosef pose);
+    virtual void SetHmdEyeRay(XrPosef pose);
 
 protected:
 

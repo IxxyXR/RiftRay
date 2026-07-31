@@ -15,25 +15,29 @@ AntQuad::~AntQuad()
 {
 }
 
-void AntQuad::initGL(ovrSession& session, ovrSizei sz)
+bool AntQuad::initGL(
+    XrSession session, int64_t format, uint32_t width, uint32_t height)
 {
-    MousingQuad::initGL(session, sz);
+    if (!MousingQuad::initGL(session, format, width, height))
+        return false;
 
 #ifdef USE_ANTTWEAKBAR
     ///@note This will override the Aux window's TwSize call.
     const glm::ivec2 fbsz(m_fbo.w, m_fbo.h);
     TwWindowSize(fbsz.x, fbsz.y);
 #endif
+    return true;
 }
 
-void AntQuad::exitGL(ovrSession& session)
+void AntQuad::exitGL()
 {
-    MousingQuad::exitGL(session);
+    MousingQuad::exitGL();
 }
 
 void AntQuad::DrawToQuad()
 {
-    _PrepareToDrawToQuad();
+    if (!_PrepareToDrawToQuad())
+        return;
     {
         const float g = .05f;
         glClearColor(g, g, g, 0.f);
@@ -74,7 +78,7 @@ void AntQuad::MouseMotion(int x, int y)
 #endif
 }
 
-void AntQuad::SetHmdEyeRay(ovrPosef pose)
+void AntQuad::SetHmdEyeRay(XrPosef pose)
 {
     MousingQuad::SetHmdEyeRay(pose);
 

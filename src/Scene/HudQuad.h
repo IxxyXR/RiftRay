@@ -10,9 +10,10 @@
 #include <GL/glew.h>
 
 #include <glm/glm.hpp>
-#include <OVR_CAPI.h>
-#include <OVR_CAPI_GL.h>
+#include <openxr/openxr.h>
 #include "FBO.h"
+
+#include <vector>
 
 ///@brief A flat quad displayed in-world passed as a compositor layer to OVR SDK.
 class HudQuad
@@ -21,12 +22,16 @@ public:
     HudQuad();
     virtual ~HudQuad();
 
-    virtual void initGL(ovrSession& session, ovrSizei sz);
-    virtual void exitGL(ovrSession& session);
+    virtual bool initGL(XrSession session, int64_t format, uint32_t width, uint32_t height);
+    virtual void exitGL();
     virtual void DrawToQuad();
-    virtual void SetHoldingFlag(ovrPosef pose, bool f);
-    virtual ovrPosef GetPose() const { return m_QuadPoseCenter; }
-    virtual void SetHmdEyeRay(ovrPosef pose);
+    virtual void SetHoldingFlag(XrPosef pose, bool f);
+    virtual XrPosef GetPose() const { return m_QuadPoseCenter; }
+    virtual void SetHmdEyeRay(XrPosef pose);
+
+    XrSwapchain GetSwapchain() const { return m_swapChain; }
+    uint32_t GetWidth() const { return static_cast<uint32_t>(m_fbo.w); }
+    uint32_t GetHeight() const { return static_cast<uint32_t>(m_fbo.h); }
 
     virtual bool GetPaneRayIntersectionCoordinates(
         const glm::mat4& quadPoseMatrix, ///< [in] Quad's pose in world space
@@ -35,17 +40,20 @@ public:
         glm::vec2& planePtOut, ///< [out] Intersection point in XY plane coordinates
         float& tParamOut); ///< [out] t parameter of ray intersection (ro + t*dt)
 
-    ovrPosef m_QuadPoseCenter;
-    ovrTextureSwapChain m_swapChain;
-    ovrSession m_session;
+    XrPosef m_QuadPoseCenter;
+    XrSwapchain m_swapChain;
+    XrSession m_session;
     bool m_showQuadInWorld;
 
 protected:
-    void _PrepareToDrawToQuad() const;
-    void _FinalizeDrawToQuad();
+    bool _PrepareToDrawToQuad();
+    bool _FinalizeDrawToQuad();
 
     FBO m_fbo;
     glm::vec2 m_quadSize;
+    std::vector<GLuint> m_swapchainTextures;
+    bool m_imageAcquired;
+    uint32_t m_acquiredImageIndex;
 
     // Movement state
     bool m_holding;

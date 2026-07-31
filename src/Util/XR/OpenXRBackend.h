@@ -8,6 +8,7 @@
 #include "FBO.h"
 
 #include <string>
+#include <utility>
 #include <vector>
 
 /// Owns RiftRay's platform-independent OpenXR state and the Windows OpenGL
@@ -15,6 +16,24 @@
 class OpenXRBackend
 {
 public:
+    struct InputState
+    {
+        InputState();
+
+        XrVector2f move;
+        XrVector2f turn;
+        float leftTrigger;
+        float rightTrigger;
+        bool toggleShader;
+        bool toggleHud;
+        bool click;
+        bool reset;
+        bool menu;
+        bool hold;
+        bool aimPoseValid;
+        XrPosef aimPose;
+    };
+
     OpenXRBackend();
     ~OpenXRBackend();
 
@@ -33,6 +52,9 @@ public:
     /// Locates stereo views at the current frame's predicted display time.
     bool LocateViews();
 
+    /// Synchronizes the OpenXR action set and locates the right-hand aim pose.
+    bool SyncInput();
+
     /// Acquires, waits for, and binds one view's swapchain image/FBO.
     bool BeginView(uint32_t viewIndex);
 
@@ -44,7 +66,9 @@ public:
         uint32_t viewIndex, int32_t x, int32_t y, int32_t width, int32_t height);
 
     /// Submits the projection layer plus an optional already-populated quad layer.
-    bool EndFrame(const XrCompositionLayerQuad* quadLayer = NULL);
+    bool EndFrame(
+        const XrCompositionLayerQuad* quadLayer = NULL,
+        bool submitProjection = true);
 
     void ShutdownSession();
     void Shutdown();
@@ -67,6 +91,8 @@ public:
     const FBO& GetViewFramebuffer(uint32_t viewIndex) const;
     uint32_t GetViewWidth(uint32_t viewIndex) const;
     uint32_t GetViewHeight(uint32_t viewIndex) const;
+    int64_t GetColorFormat() const;
+    const InputState& GetInputState() const { return m_inputState; }
 
     std::string DescribeResult(XrResult result) const;
 
@@ -90,6 +116,16 @@ private:
     bool LoadOpenGLFunctions();
     bool ValidateOpenGLRequirements() const;
     bool CreateReferenceSpace();
+    bool CreateActions();
+    bool CreateAction(
+        XrActionType type, const char* name, const char* localizedName,
+        XrAction& action);
+    bool SuggestBindings(
+        const char* interactionProfile,
+        const std::vector<std::pair<XrAction, const char*> >& bindings);
+    bool ReadBooleanAction(XrAction action, bool& value) const;
+    bool ReadFloatAction(XrAction action, float& value) const;
+    bool ReadVector2Action(XrAction action, XrVector2f& value) const;
     bool CreateViewSwapchains();
     bool CreateViewTarget(
         ViewTarget& target, const XrViewConfigurationView& configuration, int64_t format);
@@ -103,6 +139,21 @@ private:
     XrSpace m_appSpace;
     XrSessionState m_sessionState;
     bool m_sessionRunning;
+
+    XrActionSet m_actionSet;
+    XrAction m_moveAction;
+    XrAction m_turnAction;
+    XrAction m_leftTriggerAction;
+    XrAction m_rightTriggerAction;
+    XrAction m_toggleShaderAction;
+    XrAction m_toggleHudAction;
+    XrAction m_clickAction;
+    XrAction m_resetAction;
+    XrAction m_menuAction;
+    XrAction m_holdAction;
+    XrAction m_aimPoseAction;
+    XrSpace m_aimSpace;
+    InputState m_inputState;
 
     PFN_xrVoidFunction m_getOpenGLGraphicsRequirements;
 

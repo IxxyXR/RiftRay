@@ -47,6 +47,22 @@ OpenXRBackend::ViewTarget::ViewTarget()
 {
 }
 
+OpenXRBackend::InputState::InputState()
+    : move{ 0.f, 0.f }
+    , turn{ 0.f, 0.f }
+    , leftTrigger(0.f)
+    , rightTrigger(0.f)
+    , toggleShader(false)
+    , toggleHud(false)
+    , click(false)
+    , reset(false)
+    , menu(false)
+    , hold(false)
+    , aimPoseValid(false)
+    , aimPose(IdentityPose())
+{
+}
+
 OpenXRBackend::OpenXRBackend()
     : m_instance(XR_NULL_HANDLE)
     , m_systemId(XR_NULL_SYSTEM_ID)
@@ -54,6 +70,20 @@ OpenXRBackend::OpenXRBackend()
     , m_appSpace(XR_NULL_HANDLE)
     , m_sessionState(XR_SESSION_STATE_UNKNOWN)
     , m_sessionRunning(false)
+    , m_actionSet(XR_NULL_HANDLE)
+    , m_moveAction(XR_NULL_HANDLE)
+    , m_turnAction(XR_NULL_HANDLE)
+    , m_leftTriggerAction(XR_NULL_HANDLE)
+    , m_rightTriggerAction(XR_NULL_HANDLE)
+    , m_toggleShaderAction(XR_NULL_HANDLE)
+    , m_toggleHudAction(XR_NULL_HANDLE)
+    , m_clickAction(XR_NULL_HANDLE)
+    , m_resetAction(XR_NULL_HANDLE)
+    , m_menuAction(XR_NULL_HANDLE)
+    , m_holdAction(XR_NULL_HANDLE)
+    , m_aimPoseAction(XR_NULL_HANDLE)
+    , m_aimSpace(XR_NULL_HANDLE)
+    , m_inputState()
     , m_getOpenGLGraphicsRequirements(NULL)
     , m_viewConfigurations()
     , m_views()
@@ -263,7 +293,7 @@ bool OpenXRBackend::InitializeSession()
         return false;
     }
 
-    if (!CreateReferenceSpace() || !CreateViewSwapchains())
+    if (!CreateReferenceSpace() || !CreateActions() || !CreateViewSwapchains())
     {
         ShutdownSession();
         return false;
@@ -290,6 +320,268 @@ bool OpenXRBackend::CreateReferenceSpace()
         return false;
     }
     return true;
+}
+
+bool OpenXRBackend::CreateAction(
+    XrActionType type, const char* name, const char* localizedName,
+    XrAction& action)
+{
+    XrActionCreateInfo createInfo = { XR_TYPE_ACTION_CREATE_INFO };
+    createInfo.actionType = type;
+    std::snprintf(
+        createInfo.actionName, XR_MAX_ACTION_NAME_SIZE, "%s", name);
+    std::snprintf(
+        createInfo.localizedActionName,
+        XR_MAX_LOCALIZED_ACTION_NAME_SIZE, "%s", localizedName);
+    const XrResult result = xrCreateAction(m_actionSet, &createInfo, &action);
+    if (XR_FAILED(result))
+    {
+        LOG_ERROR("%s Unable to create action %s: %s",
+            kOpenXRLogPrefix, name, DescribeResult(result).c_str());
+        action = XR_NULL_HANDLE;
+        return false;
+    }
+    return true;
+}
+
+bool OpenXRBackend::SuggestBindings(
+    const char* interactionProfile,
+    const std::vector<std::pair<XrAction, const char*> >& bindings)
+{
+    XrPath profilePath = XR_NULL_PATH;
+    XrResult result = xrStringToPath(
+        m_instance, interactionProfile, &profilePath);
+    if (XR_FAILED(result))
+        return false;
+
+    std::vector<XrActionSuggestedBinding> suggestions;
+    suggestions.reserve(bindings.size());
+    for (size_t index = 0; index < bindings.size(); ++index)
+    {
+        XrPath bindingPath = XR_NULL_PATH;
+        result = xrStringToPath(m_instance, bindings[index].second, &bindingPath);
+        if (XR_FAILED(result))
+            return false;
+        XrActionSuggestedBinding suggestion = {
+            bindings[index].first, bindingPath
+        };
+        suggestions.push_back(suggestion);
+    }
+
+    XrInteractionProfileSuggestedBinding suggested = {
+        XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING
+    };
+    suggested.interactionProfile = profilePath;
+    suggested.suggestedBindings = suggestions.data();
+    suggested.countSuggestedBindings =
+        static_cast<uint32_t>(suggestions.size());
+    result = xrSuggestInteractionProfileBindings(m_instance, &suggested);
+    if (XR_FAILED(result))
+    {
+        LOG_INFO("%s Interaction profile %s was not accepted: %s",
+            kOpenXRLogPrefix, interactionProfile, DescribeResult(result).c_str());
+        return false;
+    }
+    return true;
+}
+
+bool OpenXRBackend::CreateActions()
+{
+    XrActionSetCreateInfo setInfo = { XR_TYPE_ACTION_SET_CREATE_INFO };
+    std::snprintf(
+        setInfo.actionSetName, XR_MAX_ACTION_SET_NAME_SIZE, "%s", "gameplay");
+    std::snprintf(
+        setInfo.localizedActionSetName,
+        XR_MAX_LOCALIZED_ACTION_SET_NAME_SIZE, "%s", "RiftRay controls");
+    setInfo.priority = 0;
+    XrResult result = xrCreateActionSet(m_instance, &setInfo, &m_actionSet);
+    if (XR_FAILED(result))
+    {
+        LOG_ERROR("%s Unable to create action set: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
+        m_actionSet = XR_NULL_HANDLE;
+        return false;
+    }
+
+    if (!CreateAction(XR_ACTION_TYPE_VECTOR2F_INPUT,
+            "move", "Move", m_moveAction) ||
+        !CreateAction(XR_ACTION_TYPE_VECTOR2F_INPUT,
+            "turn", "Turn", m_turnAction) ||
+        !CreateAction(XR_ACTION_TYPE_FLOAT_INPUT,
+            "left_trigger", "Move down", m_leftTriggerAction) ||
+        !CreateAction(XR_ACTION_TYPE_FLOAT_INPUT,
+            "right_trigger", "Move up", m_rightTriggerAction) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "toggle_shader", "Enter or exit shader", m_toggleShaderAction) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "toggle_hud", "Toggle controls", m_toggleHudAction) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "click", "Click controls", m_clickAction) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "reset", "Reset position", m_resetAction) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "menu", "Recenter", m_menuAction) ||
+        !CreateAction(XR_ACTION_TYPE_BOOLEAN_INPUT,
+            "hold", "Move controls", m_holdAction) ||
+        !CreateAction(XR_ACTION_TYPE_POSE_INPUT,
+            "aim_pose", "Aim pose", m_aimPoseAction))
+        return false;
+
+    SuggestBindings(
+        "/interaction_profiles/oculus/touch_controller",
+        {
+            { m_moveAction, "/user/hand/left/input/thumbstick" },
+            { m_turnAction, "/user/hand/right/input/thumbstick" },
+            { m_leftTriggerAction, "/user/hand/left/input/trigger/value" },
+            { m_rightTriggerAction, "/user/hand/right/input/trigger/value" },
+            { m_toggleShaderAction, "/user/hand/right/input/a/click" },
+            { m_toggleHudAction, "/user/hand/right/input/b/click" },
+            { m_clickAction, "/user/hand/left/input/x/click" },
+            { m_resetAction, "/user/hand/left/input/y/click" },
+            { m_menuAction, "/user/hand/left/input/menu/click" },
+            { m_holdAction, "/user/hand/right/input/thumbstick/click" },
+            { m_aimPoseAction, "/user/hand/right/input/aim/pose" }
+        });
+    SuggestBindings(
+        "/interaction_profiles/valve/index_controller",
+        {
+            { m_moveAction, "/user/hand/left/input/thumbstick" },
+            { m_turnAction, "/user/hand/right/input/thumbstick" },
+            { m_leftTriggerAction, "/user/hand/left/input/trigger/value" },
+            { m_rightTriggerAction, "/user/hand/right/input/trigger/value" },
+            { m_toggleShaderAction, "/user/hand/right/input/a/click" },
+            { m_toggleHudAction, "/user/hand/right/input/b/click" },
+            { m_clickAction, "/user/hand/left/input/a/click" },
+            { m_resetAction, "/user/hand/left/input/b/click" },
+            { m_holdAction, "/user/hand/right/input/thumbstick/click" },
+            { m_aimPoseAction, "/user/hand/right/input/aim/pose" }
+        });
+    SuggestBindings(
+        "/interaction_profiles/khr/simple_controller",
+        {
+            { m_toggleShaderAction, "/user/hand/right/input/select/click" },
+            { m_menuAction, "/user/hand/right/input/menu/click" },
+            { m_aimPoseAction, "/user/hand/right/input/aim/pose" }
+        });
+
+    XrSessionActionSetsAttachInfo attachInfo = {
+        XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO
+    };
+    attachInfo.countActionSets = 1;
+    attachInfo.actionSets = &m_actionSet;
+    result = xrAttachSessionActionSets(m_session, &attachInfo);
+    if (XR_FAILED(result))
+    {
+        LOG_ERROR("%s Unable to attach action set: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
+        return false;
+    }
+
+    XrActionSpaceCreateInfo spaceInfo = {
+        XR_TYPE_ACTION_SPACE_CREATE_INFO
+    };
+    spaceInfo.action = m_aimPoseAction;
+    spaceInfo.poseInActionSpace = IdentityPose();
+    result = xrCreateActionSpace(m_session, &spaceInfo, &m_aimSpace);
+    if (XR_FAILED(result))
+    {
+        LOG_ERROR("%s Unable to create aim action space: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
+        m_aimSpace = XR_NULL_HANDLE;
+        return false;
+    }
+    LOG_INFO("%s Gameplay action set attached", kOpenXRLogPrefix);
+    return true;
+}
+
+bool OpenXRBackend::ReadBooleanAction(XrAction action, bool& value) const
+{
+    XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+    getInfo.action = action;
+    XrActionStateBoolean state = { XR_TYPE_ACTION_STATE_BOOLEAN };
+    const XrResult result = xrGetActionStateBoolean(m_session, &getInfo, &state);
+    value = XR_SUCCEEDED(result) && state.isActive && state.currentState;
+    return XR_SUCCEEDED(result);
+}
+
+bool OpenXRBackend::ReadFloatAction(XrAction action, float& value) const
+{
+    XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+    getInfo.action = action;
+    XrActionStateFloat state = { XR_TYPE_ACTION_STATE_FLOAT };
+    const XrResult result = xrGetActionStateFloat(m_session, &getInfo, &state);
+    value = XR_SUCCEEDED(result) && state.isActive ? state.currentState : 0.f;
+    return XR_SUCCEEDED(result);
+}
+
+bool OpenXRBackend::ReadVector2Action(XrAction action, XrVector2f& value) const
+{
+    XrActionStateGetInfo getInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+    getInfo.action = action;
+    XrActionStateVector2f state = { XR_TYPE_ACTION_STATE_VECTOR2F };
+    const XrResult result = xrGetActionStateVector2f(m_session, &getInfo, &state);
+    value = XR_SUCCEEDED(result) && state.isActive
+        ? state.currentState : XrVector2f{ 0.f, 0.f };
+    return XR_SUCCEEDED(result);
+}
+
+bool OpenXRBackend::SyncInput()
+{
+    m_inputState.aimPoseValid = false;
+    if (!m_sessionRunning || m_actionSet == XR_NULL_HANDLE)
+        return false;
+    if (m_sessionState != XR_SESSION_STATE_FOCUSED)
+    {
+        m_inputState = InputState();
+        return true;
+    }
+
+    XrActiveActionSet activeSet = { m_actionSet, XR_NULL_PATH };
+    XrActionsSyncInfo syncInfo = { XR_TYPE_ACTIONS_SYNC_INFO };
+    syncInfo.countActiveActionSets = 1;
+    syncInfo.activeActionSets = &activeSet;
+    XrResult result = xrSyncActions(m_session, &syncInfo);
+    if (XR_FAILED(result))
+    {
+        LOG_ERROR("%s xrSyncActions failed: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
+        return false;
+    }
+
+    bool success = true;
+    success &= ReadVector2Action(m_moveAction, m_inputState.move);
+    success &= ReadVector2Action(m_turnAction, m_inputState.turn);
+    success &= ReadFloatAction(m_leftTriggerAction, m_inputState.leftTrigger);
+    success &= ReadFloatAction(m_rightTriggerAction, m_inputState.rightTrigger);
+    success &= ReadBooleanAction(m_toggleShaderAction, m_inputState.toggleShader);
+    success &= ReadBooleanAction(m_toggleHudAction, m_inputState.toggleHud);
+    success &= ReadBooleanAction(m_clickAction, m_inputState.click);
+    success &= ReadBooleanAction(m_resetAction, m_inputState.reset);
+    success &= ReadBooleanAction(m_menuAction, m_inputState.menu);
+    success &= ReadBooleanAction(m_holdAction, m_inputState.hold);
+
+    XrActionStateGetInfo poseGetInfo = { XR_TYPE_ACTION_STATE_GET_INFO };
+    poseGetInfo.action = m_aimPoseAction;
+    XrActionStatePose poseState = { XR_TYPE_ACTION_STATE_POSE };
+    result = xrGetActionStatePose(m_session, &poseGetInfo, &poseState);
+    success &= XR_SUCCEEDED(result);
+    if (XR_SUCCEEDED(result) && poseState.isActive &&
+        m_aimSpace != XR_NULL_HANDLE && m_frameState.predictedDisplayTime != 0)
+    {
+        XrSpaceLocation location = { XR_TYPE_SPACE_LOCATION };
+        result = xrLocateSpace(
+            m_aimSpace, m_appSpace, m_frameState.predictedDisplayTime, &location);
+        const XrSpaceLocationFlags required =
+            XR_SPACE_LOCATION_POSITION_VALID_BIT |
+            XR_SPACE_LOCATION_ORIENTATION_VALID_BIT;
+        if (XR_SUCCEEDED(result) &&
+            (location.locationFlags & required) == required)
+        {
+            m_inputState.aimPose = location.pose;
+            m_inputState.aimPoseValid = true;
+        }
+    }
+    return success;
 }
 
 int64_t OpenXRBackend::ChooseSwapchainFormat() const
@@ -629,6 +921,7 @@ bool OpenXRBackend::EndView(uint32_t viewIndex)
     if (!target.imageAcquired)
         return true;
 
+    glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer.id);
     glFramebufferTexture2D(
         GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, 0, 0);
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -668,7 +961,8 @@ void OpenXRBackend::ReleaseOutstandingImages()
     }
 }
 
-bool OpenXRBackend::EndFrame(const XrCompositionLayerQuad* quadLayer)
+bool OpenXRBackend::EndFrame(
+    const XrCompositionLayerQuad* quadLayer, bool submitProjection)
 {
     if (!m_frameBegun)
         return false;
@@ -680,7 +974,7 @@ bool OpenXRBackend::EndFrame(const XrCompositionLayerQuad* quadLayer)
     };
     std::vector<const XrCompositionLayerBaseHeader*> layers;
 
-    if (m_frameState.shouldRender == XR_TRUE && m_viewsLocated)
+    if (submitProjection && m_frameState.shouldRender == XR_TRUE && m_viewsLocated)
     {
         projectionViews.assign(
             m_views.size(),
@@ -738,6 +1032,11 @@ uint32_t OpenXRBackend::GetViewHeight(uint32_t viewIndex) const
     return m_viewTargets.at(viewIndex).height;
 }
 
+int64_t OpenXRBackend::GetColorFormat() const
+{
+    return m_viewTargets.empty() ? 0 : m_viewTargets[0].format;
+}
+
 void OpenXRBackend::ShutdownSession()
 {
     ReleaseOutstandingImages();
@@ -760,6 +1059,11 @@ void OpenXRBackend::ShutdownSession()
     m_views.clear();
     m_viewConfigurations.clear();
 
+    if (m_aimSpace != XR_NULL_HANDLE)
+    {
+        xrDestroySpace(m_aimSpace);
+        m_aimSpace = XR_NULL_HANDLE;
+    }
     if (m_appSpace != XR_NULL_HANDLE)
     {
         xrDestroySpace(m_appSpace);
@@ -770,11 +1074,28 @@ void OpenXRBackend::ShutdownSession()
         xrDestroySession(m_session);
         m_session = XR_NULL_HANDLE;
     }
+    m_inputState = InputState();
 }
 
 void OpenXRBackend::Shutdown()
 {
     ShutdownSession();
+    if (m_actionSet != XR_NULL_HANDLE)
+    {
+        xrDestroyActionSet(m_actionSet);
+        m_actionSet = XR_NULL_HANDLE;
+    }
+    m_moveAction = XR_NULL_HANDLE;
+    m_turnAction = XR_NULL_HANDLE;
+    m_leftTriggerAction = XR_NULL_HANDLE;
+    m_rightTriggerAction = XR_NULL_HANDLE;
+    m_toggleShaderAction = XR_NULL_HANDLE;
+    m_toggleHudAction = XR_NULL_HANDLE;
+    m_clickAction = XR_NULL_HANDLE;
+    m_resetAction = XR_NULL_HANDLE;
+    m_menuAction = XR_NULL_HANDLE;
+    m_holdAction = XR_NULL_HANDLE;
+    m_aimPoseAction = XR_NULL_HANDLE;
     m_systemId = XR_NULL_SYSTEM_ID;
     m_getOpenGLGraphicsRequirements = NULL;
     if (m_instance != XR_NULL_HANDLE)
