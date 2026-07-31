@@ -45,6 +45,7 @@ ovrSession g_session;
 ovrHmdDesc m_Hmd;
 long long g_frameIndex = 0;
 bool g_hmdVisible = false;
+bool g_hasHMD = false;
 
 ovrTextureSwapChain g_textureSwapChain[ovrEye_Count];
 ovrPosef m_eyePoses[ovrEye_Count]; // hold on to these for use outside of draw func
@@ -55,6 +56,8 @@ FBO m_mirrorFBO;
 ovrPerfHudMode m_perfHudMode = ovrPerfHud_Off;
 ovrInputState lastRemoteInputState = { 0 };
 ovrInputState lastXboxControllerInputState = { 0 };
+ovrInputState lastTouchInputState = { 0 };
+glm::vec3 m_touchMove = glm::vec3(0.f);
 
 FBO m_undistortedFBO;
 
@@ -157,30 +160,46 @@ void initHMD()
     const ovrResult res = ovr_Initialize(nullptr);
     if (ovrSuccess != res)
     {
-        LOG_ERROR("ovr_Initialize failed with code %d", res);
+        LOG_ERROR("ovr_Initialize failed with code %d - Running in non-VR mode", res);
+        g_hasHMD = false;
+        return;
     }
 
     ovrGraphicsLuid luid;
     if (ovrSuccess != ovr_Create(&g_session, &luid))
     {
-        LOG_ERROR("ovr_Create failed with code %d", res);
-        // return 1;
+        LOG_ERROR("ovr_Create failed - No HMD detected. Running in non-VR mode");
+        g_hasHMD = false;
+        ovr_Shutdown();
+        return;
     }
 
     ovrSessionStatus sessionStatus;
     ovr_GetSessionStatus(g_session, &sessionStatus);
     if (sessionStatus.HmdPresent == false)
     {
-        LOG_ERROR("No HMD Present.");
+        LOG_ERROR("No HMD Present - Running in non-VR mode");
+        g_hasHMD = false;
+        ovr_Destroy(g_session);
+        g_session = nullptr;
+        ovr_Shutdown();
         return;
     }
 
     m_Hmd = ovr_GetHmdDesc(g_session);
+    g_hasHMD = true;
+    LOG_INFO("HMD detected: %s", m_Hmd.ProductName);
 }
 
 ///@brief Called once a GL context has been set up.
 void initVR()
 {
+    if (!g_hasHMD)
+    {
+        LOG_INFO("No HMD available - VR features disabled");
+        return;
+    }
+
     const ovrHmdDesc& hmd = m_Hmd;
 
     for (int eye = 0; eye < 2; ++eye)
@@ -366,6 +385,12 @@ void displayMonitor()
 // Display to an HMD with OVR SDK backend.
 void displayHMD()
 {
+    if (!g_hasHMD)
+    {
+        displayMonitor();
+        return;
+    }
+
     ovrSessionStatus sessionStatus;
     ovr_GetSessionStatus(g_session, &sessionStatus);
 
@@ -588,6 +613,9 @@ void displayHMD()
 
 void exitVR()
 {
+    if (!g_hasHMD)
+        return;
+
     ///@todo delete swap fbos
     //_DestroySwapTextures();
 
@@ -657,7 +685,8 @@ void keyboard(GLFWwindow* pWindow, int key, int codes, int action, int mods)
             break;
 
         case GLFW_KEY_SPACE:
-            ovr_RecenterTrackingOrigin(g_session);
+            if (g_hasHMD)
+                ovr_RecenterTrackingOrigin(g_session);
             break;
 
         case GLFW_KEY_R:
@@ -880,17 +909,18 @@ void joystick_XboxController(
 
 void joystick()
 {
+    if (g_joystickIdx == -1)
+        return;
+
     static char s_lastButtons[256] = { 0 };
 
     ///@todo Handle multiple joysticks
 
     ///@todo Do these calls take time? We can move them out if so
-    int joyStick1Present = GL_FALSE;
-    joyStick1Present = glfwJoystickPresent(g_joystickIdx);
+    int joyStick1Present = glfwJoystickPresent(g_joystickIdx);
     if (joyStick1Present != GL_TRUE)
     {
-        if (g_joystickIdx == -1)
-            return;
+        return;
     }
 
     // Poll joystick
@@ -990,6 +1020,9 @@ void mouseWheel(GLFWwindow* pWindow, double x, double y)
 // OVR Remote controller input
 void HandleRemote()
 {
+    if (!g_hasHMD)
+        return;
+
     ovrInputState currentRemoteInputState;
     ovr_GetInputState(g_session, ovrControllerType_Remote, &currentRemoteInputState);
     const unsigned int b = currentRemoteInputState.Buttons;
@@ -1052,6 +1085,9 @@ void HandleRemote()
 
 void HandleXboxController()
 {
+    if (!g_hasHMD)
+        return;
+
     ovrInputState currentXboxControllerInputState;
     ovr_GetInputState(g_session, ovrControllerType_XBox, &currentXboxControllerInputState);
     const unsigned int b = currentXboxControllerInputState.Buttons;
@@ -1120,6 +1156,139 @@ void HandleXboxController()
     lastXboxControllerInputState = currentXboxControllerInputState;
 }
 
+// Oculus Touch controller input
+void HandleTouchControllers()
+{
+    if (!g_hasHMD)
+        return;
+
+    ovrInputState currentTouchInputState;
+    ovr_GetInputState(g_session, ovrControllerType_Touch, &currentTouchInputState);
+    const unsigned int b = currentTouchInputState.Buttons;
+    const unsigned int b0 = lastTouchInputState.Buttons;
+    
+    // Button mappings:
+    // ovrButton_A, ovrButton_B (right controller)
+    // ovrButton_X, ovrButton_Y (left controller)
+    // ovrButton_Enter (menu button)
+    // ovrButton_LThumb, ovrButton_RThumb (thumbstick press)
+    
+    // A button - Enter/Exit shader
+    if ((b & ovrButton_A) && !(b0 & ovrButton_A))
+    {
+        g_gallery.ToggleShaderWorld();
+    }
+    
+    // B button - Toggle tweakbar
+    if ((b & ovrButton_B) && !(b0 & ovrButton_B))
+    {
+        g_tweakbarQuad.m_showQuadInWorld = !g_tweakbarQuad.m_showQuadInWorld;
+    }
+    
+    // X button - Click in tweakbar
+    if (b & ovrButton_X)
+    {
+        if (!(b0 & ovrButton_X))
+        {
+            g_tweakbarQuad.MouseClick(1);
+        }
+    }
+    else if (!(b & ovrButton_X))
+    {
+        if (b0 & ovrButton_X)
+        {
+            g_tweakbarQuad.MouseClick(0);
+        }
+    }
+    
+    // Y button - Reset position
+    if ((b & ovrButton_Y) && !(b0 & ovrButton_Y))
+    {
+        m_chassisPos = glm::vec3(0.f, 1.f, 0.f);
+    }
+    
+    // Menu button - Recenter
+    if ((b & ovrButton_Enter) && !(b0 & ovrButton_Enter))
+    {
+        ovr_RecenterTrackingOrigin(g_session);
+    }
+    
+    // Right thumbstick press - Hold/move tweakbar
+    if (b & ovrButton_RThumb)
+    {
+        if (!(b0 & ovrButton_RThumb))
+        {
+            g_tweakbarQuad.SetHoldingFlag(m_eyePoses[0], true);
+        }
+    }
+    else if (!(b & ovrButton_RThumb))
+    {
+        if (b0 & ovrButton_RThumb)
+        {
+            g_tweakbarQuad.SetHoldingFlag(m_eyePoses[0], false);
+        }
+    }
+    
+    // Left thumbstick - Movement
+    glm::vec3 touchMove(0.0f, 0.0f, 0.0f);
+    const float deadzone = 0.2f;
+    const float x_move = currentTouchInputState.Thumbstick[ovrHand_Left].x;
+    const float y_move = currentTouchInputState.Thumbstick[ovrHand_Left].y;
+    
+    if (fabs(x_move) > deadzone || fabs(y_move) > deadzone)
+    {
+        const glm::vec3 forward(0.f, 0.f, -1.f);
+        const glm::vec3 right(1.f, 0.f, 0.f);
+        touchMove += x_move * right;
+        touchMove -= y_move * forward;
+    }
+    
+    // Triggers for vertical movement
+    const float leftTrigger = currentTouchInputState.IndexTrigger[ovrHand_Left];
+    const float rightTrigger = currentTouchInputState.IndexTrigger[ovrHand_Right];
+    const float triggerThreshold = 0.3f;
+    
+    if (leftTrigger > triggerThreshold)
+    {
+        touchMove += glm::vec3(0.f, -leftTrigger, 0.f);
+    }
+    if (rightTrigger > triggerThreshold)
+    {
+        touchMove += glm::vec3(0.f, rightTrigger, 0.f);
+    }
+    
+    m_touchMove = touchMove;
+    
+    // Right thumbstick for smooth turning (if not snap turn mode)
+    const float rx_move = currentTouchInputState.Thumbstick[ovrHand_Right].x;
+    if (!m_snapTurn && fabs(rx_move) > deadzone)
+    {
+        m_joystickYaw = rx_move * 0.75f;
+    }
+    // Snap turn with right thumbstick
+    else if (m_snapTurn)
+    {
+        static bool snapTurnReady = true;
+        const float snapThreshold = 0.7f;
+        const float yawIncr = 0.3f;
+        
+        if (fabs(rx_move) > snapThreshold && snapTurnReady)
+        {
+            if (rx_move > 0)
+                m_chassisYaw += yawIncr;
+            else
+                m_chassisYaw -= yawIncr;
+            snapTurnReady = false;
+        }
+        else if (fabs(rx_move) < deadzone)
+        {
+            snapTurnReady = true;
+        }
+    }
+    
+    lastTouchInputState = currentTouchInputState;
+}
+
 void timestep()
 {
     const double absT = g_timer.seconds();
@@ -1131,15 +1300,18 @@ void timestep()
     }
 
     // Move in the direction the viewer is facing.
-    const glm::vec3 move_dt = (m_keyboardMove + m_joystickMove + m_remoteMove) * m_headSize * static_cast<float>(dt);
+    const glm::vec3 move_dt = (m_keyboardMove + m_joystickMove + m_remoteMove + m_touchMove) * m_headSize * static_cast<float>(dt);
     glm::mat4 moveTxfm = makeWorldToChassisMatrix();
 
     // Move in the direction the viewer is facing if HMD is worn.
     ovrSessionStatus sessionStatus;
-    ovr_GetSessionStatus(g_session, &sessionStatus);
-    if (sessionStatus.HmdMounted == true)
+    if (g_hasHMD)
     {
-        moveTxfm *= makeMatrixFromPose(m_eyePoses[0], m_headSize);
+        ovr_GetSessionStatus(g_session, &sessionStatus);
+        if (sessionStatus.HmdMounted == true)
+        {
+            moveTxfm *= makeMatrixFromPose(m_eyePoses[0], m_headSize);
+        }
     }
 
     const glm::vec4 mv4 = moveTxfm * glm::vec4(move_dt, 0.f);
@@ -1154,6 +1326,7 @@ void timestep()
 
     HandleRemote();
     HandleXboxController();
+    HandleTouchControllers();
 }
 
 void resize(GLFWwindow* pWindow, int w, int h)
