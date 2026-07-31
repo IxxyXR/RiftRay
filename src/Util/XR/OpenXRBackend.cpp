@@ -3,15 +3,7 @@
 #include "OpenXRBackend.h"
 
 #include "Logger.h"
-
-#if defined(_WIN32)
-#  define WIN32_LEAN_AND_MEAN
-#  define NOMINMAX
-#  include <windows.h>
-#  define XR_USE_PLATFORM_WIN32
-#  define XR_USE_GRAPHICS_API_OPENGL
-#  include <openxr/openxr_platform.h>
-#endif
+#include "OpenXRGraphicsBinding.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -21,7 +13,6 @@
 namespace
 {
 const char* const kOpenXRLogPrefix = "[RiftRay OpenXR]";
-const char* const kRequiredGraphicsExtension = "XR_KHR_opengl_enable";
 const XrViewConfigurationType kViewConfiguration =
     XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
 const uint32_t kExpectedViewCount = 2;
@@ -72,6 +63,7 @@ OpenXRBackend::OpenXRBackend()
     , m_environmentBlendMode(XR_ENVIRONMENT_BLEND_MODE_OPAQUE)
     , m_sessionState(XR_SESSION_STATE_UNKNOWN)
     , m_sessionRunning(false)
+    , m_graphicsBinding(CreatePlatformOpenXRGraphicsBinding())
     , m_actionSet(XR_NULL_HANDLE)
     , m_moveAction(XR_NULL_HANDLE)
     , m_turnAction(XR_NULL_HANDLE)
@@ -86,7 +78,6 @@ OpenXRBackend::OpenXRBackend()
     , m_aimPoseAction(XR_NULL_HANDLE)
     , m_aimSpace(XR_NULL_HANDLE)
     , m_inputState()
-    , m_getOpenGLGraphicsRequirements(NULL)
     , m_viewConfigurations()
     , m_views()
     , m_viewTargets()
@@ -104,6 +95,14 @@ OpenXRBackend::~OpenXRBackend()
 
 bool OpenXRBackend::HasRequiredExtensions() const
 {
+    if (!m_graphicsBinding)
+    {
+        LOG_ERROR("%s No graphics binding exists for this platform",
+            kOpenXRLogPrefix);
+        return false;
+    }
+    const char* const requiredExtension =
+        m_graphicsBinding->RequiredExtensionName();
     uint32_t extensionCount = 0;
     XrResult result = xrEnumerateInstanceExtensionProperties(
         NULL, 0, &extensionCount, NULL);
@@ -127,14 +126,14 @@ bool OpenXRBackend::HasRequiredExtensions() const
 
     const bool found = std::find_if(
         extensions.begin(), extensions.end(),
-        [](const XrExtensionProperties& extension)
+        [requiredExtension](const XrExtensionProperties& extension)
         {
-            return std::strcmp(extension.extensionName, kRequiredGraphicsExtension) == 0;
+            return std::strcmp(extension.extensionName, requiredExtension) == 0;
         }) != extensions.end();
     if (!found)
     {
         LOG_ERROR("%s Runtime does not expose required extension %s",
-            kOpenXRLogPrefix, kRequiredGraphicsExtension);
+            kOpenXRLogPrefix, requiredExtension);
     }
     return found;
 }
@@ -146,7 +145,9 @@ bool OpenXRBackend::Initialize()
     if (!HasRequiredExtensions())
         return false;
 
-    const char* const enabledExtensions[] = { kRequiredGraphicsExtension };
+    const char* const enabledExtensions[] = {
+        m_graphicsBinding->RequiredExtensionName()
+    };
     XrInstanceCreateInfo createInfo = { XR_TYPE_INSTANCE_CREATE_INFO };
     std::snprintf(
         createInfo.applicationInfo.applicationName,
@@ -226,94 +227,32 @@ bool OpenXRBackend::Initialize()
         LOG_INFO("%s System: %s", kOpenXRLogPrefix, systemProperties.systemName);
     }
 
-    if (!LoadOpenGLFunctions())
-    {
-        Shutdown();
-        return false;
-    }
-    return true;
-}
-
-bool OpenXRBackend::LoadOpenGLFunctions()
-{
-    PFN_xrVoidFunction function = NULL;
-    const XrResult result = xrGetInstanceProcAddr(
-        m_instance, "xrGetOpenGLGraphicsRequirementsKHR", &function);
-    if (XR_FAILED(result) || function == NULL)
-    {
-        LOG_ERROR("%s Unable to load xrGetOpenGLGraphicsRequirementsKHR: %s",
-            kOpenXRLogPrefix, DescribeResult(result).c_str());
-        return false;
-    }
-    m_getOpenGLGraphicsRequirements = function;
-    return true;
-}
-
-bool OpenXRBackend::ValidateOpenGLRequirements() const
-{
-    XrGraphicsRequirementsOpenGLKHR requirements = {
-        XR_TYPE_GRAPHICS_REQUIREMENTS_OPENGL_KHR
-    };
-    const PFN_xrGetOpenGLGraphicsRequirementsKHR getRequirements =
-        reinterpret_cast<PFN_xrGetOpenGLGraphicsRequirementsKHR>(
-            m_getOpenGLGraphicsRequirements);
-    const XrResult result = getRequirements(
-        m_instance, m_systemId, &requirements);
-    if (XR_FAILED(result))
-    {
-        LOG_ERROR("%s OpenGL graphics requirements query failed: %s",
-            kOpenXRLogPrefix, DescribeResult(result).c_str());
-        return false;
-    }
-
-    GLint major = 0;
-    GLint minor = 0;
-    glGetIntegerv(GL_MAJOR_VERSION, &major);
-    glGetIntegerv(GL_MINOR_VERSION, &minor);
-    const XrVersion currentVersion = XR_MAKE_VERSION(major, minor, 0);
-    if (currentVersion < requirements.minApiVersionSupported ||
-        currentVersion > requirements.maxApiVersionSupported)
-    {
-        LOG_ERROR("%s OpenGL %d.%d is outside runtime range %u.%u through %u.%u",
-            kOpenXRLogPrefix,
-            major, minor,
-            XR_VERSION_MAJOR(requirements.minApiVersionSupported),
-            XR_VERSION_MINOR(requirements.minApiVersionSupported),
-            XR_VERSION_MAJOR(requirements.maxApiVersionSupported),
-            XR_VERSION_MINOR(requirements.maxApiVersionSupported));
-        return false;
-    }
-
-    LOG_INFO("%s OpenGL %d.%d satisfies runtime graphics requirements",
-        kOpenXRLogPrefix, major, minor);
     return true;
 }
 
 bool OpenXRBackend::InitializeSession()
 {
-    if (!IsInstanceReady() || !HasSystem() ||
-        m_getOpenGLGraphicsRequirements == NULL)
+    if (!IsInstanceReady() || !HasSystem() || !m_graphicsBinding)
         return false;
     if (IsSessionReady())
         return true;
-    if (wglGetCurrentDC() == NULL || wglGetCurrentContext() == NULL)
+
+    std::string graphicsDiagnostic;
+    XrResult result = m_graphicsBinding->PrepareSession(
+        m_instance, m_systemId, graphicsDiagnostic);
+    if (!graphicsDiagnostic.empty())
+        LOG_INFO("%s %s", kOpenXRLogPrefix, graphicsDiagnostic.c_str());
+    if (XR_FAILED(result))
     {
-        LOG_ERROR("%s No current WGL context for session creation", kOpenXRLogPrefix);
+        LOG_ERROR("%s Graphics binding preparation failed: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
         return false;
     }
-    if (!ValidateOpenGLRequirements())
-        return false;
-
-    XrGraphicsBindingOpenGLWin32KHR binding = {
-        XR_TYPE_GRAPHICS_BINDING_OPENGL_WIN32_KHR
-    };
-    binding.hDC = wglGetCurrentDC();
-    binding.hGLRC = wglGetCurrentContext();
 
     XrSessionCreateInfo createInfo = { XR_TYPE_SESSION_CREATE_INFO };
-    createInfo.next = &binding;
+    createInfo.next = m_graphicsBinding->SessionCreateNext();
     createInfo.systemId = m_systemId;
-    XrResult result = xrCreateSession(m_instance, &createInfo, &m_session);
+    result = xrCreateSession(m_instance, &createInfo, &m_session);
     if (XR_FAILED(result))
     {
         LOG_ERROR("%s xrCreateSession failed: %s",
@@ -328,7 +267,7 @@ bool OpenXRBackend::InitializeSession()
         return false;
     }
 
-    LOG_INFO("%s WGL session and stereo swapchains created", kOpenXRLogPrefix);
+    LOG_INFO("%s Graphics session and stereo swapchains created", kOpenXRLogPrefix);
     return true;
 }
 
@@ -717,25 +656,19 @@ bool OpenXRBackend::CreateViewTarget(
         return false;
     }
 
-    uint32_t imageCount = 0;
-    result = xrEnumerateSwapchainImages(
-        target.swapchain, 0, &imageCount, NULL);
-    if (XR_FAILED(result) || imageCount == 0)
-        return false;
-
-    std::vector<XrSwapchainImageOpenGLKHR> images(
-        imageCount, XrSwapchainImageOpenGLKHR{ XR_TYPE_SWAPCHAIN_IMAGE_OPENGL_KHR });
-    result = xrEnumerateSwapchainImages(
-        target.swapchain, imageCount, &imageCount,
-        reinterpret_cast<XrSwapchainImageBaseHeader*>(images.data()));
+    result = m_graphicsBinding->EnumerateSwapchainTextures(
+        target.swapchain, target.textures);
     if (XR_FAILED(result))
+    {
+        LOG_ERROR("%s Unable to enumerate swapchain images: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
         return false;
+    }
 
-    target.textures.resize(imageCount);
+    const uint32_t imageCount = static_cast<uint32_t>(target.textures.size());
     for (uint32_t image = 0; image < imageCount; ++image)
     {
-        target.textures[image] = images[image].image;
-        glBindTexture(GL_TEXTURE_2D, images[image].image);
+        glBindTexture(GL_TEXTURE_2D, target.textures[image]);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
@@ -1142,7 +1075,6 @@ void OpenXRBackend::Shutdown()
     m_aimPoseAction = XR_NULL_HANDLE;
     m_systemId = XR_NULL_SYSTEM_ID;
     m_environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
-    m_getOpenGLGraphicsRequirements = NULL;
     if (m_instance != XR_NULL_HANDLE)
     {
         const XrResult result = xrDestroyInstance(m_instance);

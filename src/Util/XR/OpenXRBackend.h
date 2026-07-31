@@ -7,12 +7,15 @@
 
 #include "FBO.h"
 
+#include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-/// Owns RiftRay's platform-independent OpenXR state and the Windows OpenGL
-/// session resources. Scene rendering continues to consume GLM matrices.
+class OpenXRGraphicsBinding;
+
+/// Owns RiftRay's shared OpenXR policy and current-platform GL session resources.
+/// Scene rendering continues to consume GLM matrices.
 class OpenXRBackend
 {
 public:
@@ -40,7 +43,7 @@ public:
     /// Instance and HMD system discovery. Safe to call before creating GL.
     bool Initialize();
 
-    /// Creates a session for the current WGL context and stereo swapchains.
+    /// Creates a session for the current platform GL context and stereo swapchains.
     bool InitializeSession();
 
     /// Polls all pending runtime events and applies session state transitions.
@@ -113,8 +116,6 @@ private:
     };
 
     bool HasRequiredExtensions() const;
-    bool LoadOpenGLFunctions();
-    bool ValidateOpenGLRequirements() const;
     bool CreateReferenceSpace();
     bool CreateActions();
     bool CreateAction(
@@ -142,6 +143,8 @@ private:
     XrSessionState m_sessionState;
     bool m_sessionRunning;
 
+    std::unique_ptr<OpenXRGraphicsBinding> m_graphicsBinding;
+
     XrActionSet m_actionSet;
     XrAction m_moveAction;
     XrAction m_turnAction;
@@ -156,8 +159,6 @@ private:
     XrAction m_aimPoseAction;
     XrSpace m_aimSpace;
     InputState m_inputState;
-
-    PFN_xrVoidFunction m_getOpenGLGraphicsRequirements;
 
     std::vector<XrViewConfigurationView> m_viewConfigurations;
     std::vector<XrView> m_views;
