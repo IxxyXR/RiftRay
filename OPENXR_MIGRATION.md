@@ -11,6 +11,160 @@ The migration touches five areas:
 4. Matrix utilities (`MatrixFunctions.cpp`)
 5. Input handling (`HandleRemote`, `HandleXboxController`, `HandleTouchControllers`)
 
+## Migration goals and non-goals
+
+The first target is a Windows desktop OpenXR build using the existing GLFW/WGL
+OpenGL context. It must run against whichever conformant OpenXR runtime is active,
+including SteamVR and the Meta PC runtime. Runtime selection is an operating-system
+and runtime setting; RiftRay must not contain SteamVR- or Meta-specific runtime
+selection code.
+
+The initial migration deliberately does not include:
+
+- Steamworks APIs, store packaging, achievements, or workshop integration.
+- Android application lifecycle, EGL, APK asset loading, or OpenGL ES shader work.
+- Hand tracking, eye tracking, passthrough, or vendor extensions.
+- A redesign of the renderer or shader-gallery scene system.
+
+The desktop port should establish a platform-neutral OpenXR boundary so a later
+Android/Quest backend can reuse session state, view location, frame timing, actions,
+and composition-layer construction. Android will provide a different graphics
+binding and swapchain image type behind that boundary.
+
+## Backend transition strategy
+
+Do not attempt a flag-day rewrite inside `main_glfw_ovrsdk13.cpp`. Introduce an
+OpenXR backend with explicit ownership of OpenXR handles and keep the monitor render
+path operational throughout the migration. Remove LibOVR only after the OpenXR path
+meets the desktop acceptance criteria below.
+
+The backend boundary should own:
+
+- Instance, system, session, reference spaces, and session state.
+- Required extension discovery and OpenGL graphics-requirement validation.
+- Stereo view configuration and per-view swapchains.
+- Swapchain image acquisition, wait, release, and framebuffer attachment.
+- Frame wait/begin/end sequencing and composition-layer submission.
+- Action sets, bindings, action spaces, and per-frame action synchronization.
+- Result formatting and cleanup in strict reverse ownership order.
+
+Scene rendering should continue to receive ordinary GLM view/projection matrices.
+Scene classes should not need direct access to `XrInstance`, `XrSession`, or runtime
+event handling.
+
+## Implementation phases and commit boundaries
+
+Each phase should compile and be committed independently:
+
+1. **Build and diagnostics scaffolding**
+   - Add the `openxr-loader` vcpkg dependency and OpenXR CMake target.
+   - Add result-to-string/check helpers and a small backend state owner.
+   - Keep LibOVR as the active renderer during this phase.
+2. **Instance and system discovery**
+   - Enumerate extensions, require `XR_KHR_opengl_enable`, create the instance,
+     obtain the HMD system, and log runtime/system properties.
+   - Failure must leave the existing monitor path usable.
+3. **WGL session and reference spaces**
+   - Query `xrGetOpenGLGraphicsRequirementsKHR` before session creation.
+   - Validate the current OpenGL version against the runtime's minimum/maximum.
+   - Create the session using `XrGraphicsBindingOpenGLWin32KHR` and create LOCAL
+     and VIEW spaces. Prefer STAGE only when the runtime reports it.
+4. **Projection swapchains and frame loop**
+   - Select a runtime-supported color format, create one swapchain per view, and
+     enumerate `XrSwapchainImageOpenGLKHR` images.
+   - Implement the required wait/begin/locate/acquire/wait/render/release/end order.
+   - Mirror one rendered eye to the GLFW window without an OpenXR mirror object.
+5. **Input actions**
+   - Create and attach the action set before the session begins.
+   - Suggest bindings for Oculus Touch and simple-controller profiles; add other
+     profiles only when their mappings are known and testable.
+   - Use pose actions/action spaces for controller rays rather than an eye pose.
+6. **HUD composition layer**
+   - Port `HudQuad` to an OpenXR quad swapchain and `XrCompositionLayerQuad`.
+   - If a runtime rejects or renders the quad inconsistently, retain a projection-
+     layer fallback that draws the UI into the eye images.
+7. **LibOVR removal and file rename**
+   - Remove all OVR types, functions, libraries, and configuration.
+   - Rename `main_glfw_ovrsdk13.cpp` to describe the OpenXR backend.
+8. **Android seam**
+   - Add a graphics-binding interface with WGL/OpenGL and Android/EGL/OpenGL ES
+     implementations; do not mix Android lifecycle code into the desktop entry point.
+
+## Desktop acceptance criteria
+
+The LibOVR dependency can be removed only when all of the following are true:
+
+- A clean x64 Debug and Release configure/build succeeds from the vcpkg manifest.
+- With no active runtime or no headset, RiftRay logs the OpenXR failure and continues
+  in monitor mode without calling functions on null handles.
+- SteamVR and Meta PC runtimes can each create a session and render stereo views.
+- Session loss, headset removal, STOPPING, and EXITING events shut down cleanly.
+- The runtime controls frame cadence through `xrWaitFrame`; the app never submits a
+  frame without a matching `xrBeginFrame`.
+- Every acquired swapchain image is released on all error paths.
+- View poses and FOV values are sampled at `predictedDisplayTime`.
+- Controller actions cover gallery selection, movement, turning, UI interaction,
+  reset/recenter behavior, and menu behavior.
+- The desktop mirror and the monitor-only path continue to work.
+- OpenXR validation-layer runs show no handle-lifetime or frame-order errors when the
+  validation layer is installed and explicitly enabled for development.
+
+## Required runtime checks
+
+OpenXR calls must not be treated as interchangeable with LibOVR calls. In particular:
+
+- Enumerate instance extensions and fail VR initialization clearly if
+  `XR_KHR_opengl_enable` is unavailable.
+- Load `xrGetOpenGLGraphicsRequirementsKHR` through `xrGetInstanceProcAddr` and call
+  it before `xrCreateSession`.
+- Enumerate view-configuration views; do not assume two views until PRIMARY_STEREO
+  has reported exactly the supported view count expected by this renderer.
+- Enumerate swapchain formats and choose from a preference list. Do not assume the
+  runtime accepts `GL_SRGB8_ALPHA8`.
+- Treat `XR_EVENT_UNAVAILABLE` from `xrPollEvent` as the normal end of the event loop.
+- Begin or end sessions only in response to the corresponding session-state events.
+- Skip projection rendering when `XrFrameState.shouldRender` is false, but still end
+  the begun frame with zero layers.
+- Check view-state validity flags before consuming position or orientation.
+- Use `XR_INFINITE_DURATION` only for the normal render-thread swapchain wait; errors
+  must unwind without retaining image ownership.
+- Destroy child handles before parents: action spaces and spaces, swapchains,
+  session, action set, then instance.
+
+## Coordinate, projection, and scale contract
+
+OpenXR poses are right-handed with +Y up and -Z forward, matching RiftRay's intended
+world convention. No blanket handedness conversion should be added. Keep the existing
+`headSize` feature as an application world-scale multiplier applied to translated pose
+positions; never modify the orientation quaternion or OpenXR near/far semantics.
+
+Projection matrices must be built from the asymmetric `XrFovf` angles returned for
+each view. The helper must document GLM column-major indexing and be covered by tests
+for symmetric and asymmetric frusta. Near and far values remain application choices;
+they are not supplied by OpenXR.
+
+The pose used for a controller/UI ray must come from a pose action space located at
+the same predicted display time as the views. The left-eye view pose is not a
+controller pose and should not be retained as the final HUD interaction source.
+
+## Android follow-on boundary
+
+The Android port will reuse the OpenXR core but replace these desktop facilities:
+
+| Desktop | Android/Quest |
+|---|---|
+| GLFW window and WGL context | Android lifecycle plus EGL context |
+| `XrGraphicsBindingOpenGLWin32KHR` | `XrGraphicsBindingOpenGLESAndroidKHR` |
+| `XR_KHR_opengl_enable` | `XR_KHR_opengl_es_enable` |
+| `XrSwapchainImageOpenGLKHR` | `XrSwapchainImageOpenGLESKHR` |
+| GLEW/desktop GL | OpenGL ES function loading |
+| Relative filesystem assets | `AAssetManager` or extracted writable assets |
+| GLSL 330 shader header | GLES 300/320 ES header with precision qualifiers |
+
+This separation is why the desktop OpenXR migration should precede Android work.
+Only the graphics binding, application lifecycle, asset transport, and GLES renderer
+should be Android-specific; OpenXR session/frame/action policy should remain shared.
+
 ---
 
 ## Step 1 — Dependencies (CMakeLists.txt)
@@ -30,7 +184,7 @@ Add OpenXR via vcpkg (already set up in this project):
 
 **vcpkg.json** — add to `"dependencies"`:
 ```json
-"openxr"
+"openxr-loader"
 ```
 
 **CMakeLists.txt** — replace the removed OVR block with:
@@ -45,7 +199,10 @@ SET(PLATFORM_LIBS
 ADD_DEFINITIONS(-DUSE_OPENXR)
 ```
 
-No DLL copy step is needed — `openxr_loader.dll` ships with the Meta/Oculus runtime, not with the app.
+The application links against the OpenXR loader, not a vendor runtime library. For a
+dynamic vcpkg build, copy the vcpkg-provided loader DLL beside the executable in the
+same way as the GLEW and GLFW DLLs. The loader discovers the active runtime through
+the platform's OpenXR runtime registration.
 
 ---
 
