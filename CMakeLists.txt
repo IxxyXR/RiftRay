@@ -11,6 +11,7 @@ MESSAGE( "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}" )
 
 SET( USE_ANTTWEAKBAR TRUE CACHE BOOL "Use AntTweakBar" )
 SET( USE_OCULUSSDK TRUE CACHE BOOL "Use Oculus SDK" )
+SET( USE_OPENXR TRUE CACHE BOOL "Build the transitional OpenXR backend" )
 
 #
 # Platform-dependent section
@@ -34,6 +35,12 @@ IF( WIN32 )
 
     find_package(GLEW REQUIRED)
     # Using dynamic GLEW from vcpkg
+
+    IF( USE_OPENXR )
+        find_package(OpenXR CONFIG REQUIRED)
+        SET( OPENXR_LIBS OpenXR::openxr_loader )
+        ADD_DEFINITIONS( -DRIFTRAY_HAS_OPENXR )
+    ENDIF()
 
     IF( USE_OCULUSSDK )
         SET( OCULUSSDK_ROOT "${PROJECT_SOURCE_DIR}/ovr_sdk_win_32.0.0" CACHE STRING "OculusSDK root" ) # OVR SDK 32.0
@@ -72,6 +79,7 @@ IF( WIN32 )
     SET( PLATFORM_LIBS
         opengl32.lib glu32.lib
         ${OVR_LIBS}
+        ${OPENXR_LIBS}
         ${ANT_LIBS}
         Winmm.lib
         )
@@ -136,6 +144,15 @@ ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
         $<TARGET_FILE_DIR:${PROJECT_NAME}>
     COMMENT "Copying DLLs to output directory"
 )
+
+IF( USE_OPENXR )
+    ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${VCPKG_INSTALLED_DIR}/x64-windows/bin/openxr_loader.dll"
+            $<TARGET_FILE_DIR:${PROJECT_NAME}>
+        COMMENT "Copying OpenXR loader to output directory"
+    )
+ENDIF()
 
 # Copy shaders and textures directories for both Debug and Release builds
 ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
