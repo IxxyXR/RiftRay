@@ -15,7 +15,7 @@
 
 #include <vector>
 
-///@brief A flat quad displayed in-world passed as a compositor layer to OVR SDK.
+///@brief A flat quad displayed in-world as an OpenXR compositor layer.
 class HudQuad
 {
 public:

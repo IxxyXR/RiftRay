@@ -1,5 +1,7 @@
-CMAKE_MINIMUM_REQUIRED( VERSION 2.6 )
+CMAKE_MINIMUM_REQUIRED( VERSION 3.15 )
 PROJECT( RiftRay3 )
+
+INCLUDE(CTest)
 
 INCLUDE(cmake_modules/InvokePython.cmake)
 INVOKEPYTHON( "tools/hardcode_shaders.py" )
@@ -10,8 +12,6 @@ ADD_DEFINITIONS( -DPROJECT_NAME="${PROJECT_NAME}" )
 MESSAGE( "CMAKE_SYSTEM_NAME: ${CMAKE_SYSTEM_NAME}" )
 
 SET( USE_ANTTWEAKBAR TRUE CACHE BOOL "Use AntTweakBar" )
-SET( USE_OCULUSSDK TRUE CACHE BOOL "Use Oculus SDK" )
-SET( USE_OPENXR TRUE CACHE BOOL "Build the transitional OpenXR backend" )
 
 #
 # Platform-dependent section
@@ -36,36 +36,9 @@ IF( WIN32 )
     find_package(GLEW REQUIRED)
     # Using dynamic GLEW from vcpkg
 
-    IF( USE_OPENXR )
-        find_package(OpenXR CONFIG REQUIRED)
-        SET( OPENXR_LIBS OpenXR::openxr_loader )
-        ADD_DEFINITIONS( -DRIFTRAY_HAS_OPENXR )
-    ENDIF()
-
-    IF( USE_OCULUSSDK )
-        SET( OCULUSSDK_ROOT "${PROJECT_SOURCE_DIR}/ovr_sdk_win_32.0.0" CACHE STRING "OculusSDK root" ) # OVR SDK 32.0
-        INCLUDE_DIRECTORIES( "${OCULUSSDK_ROOT}/LibOVR/Include" )
-        INCLUDE_DIRECTORIES( "${OCULUSSDK_ROOT}/LibOVR/Src" )
-        INCLUDE_DIRECTORIES( "${OCULUSSDK_ROOT}/LibOVRKernel/Src" )
-        IF( MSVC_VERSION STREQUAL "1600" )
-            SET( VS_DIR "VS2010" )
-        ELSEIF( MSVC_VERSION STREQUAL "1700" )
-            SET( VS_DIR "VS2012" )
-        ELSEIF( MSVC_VERSION STREQUAL "1800" )
-            SET( VS_DIR "VS2013" )
-        ELSEIF( MSVC_VERSION STREQUAL "1900" )
-            SET( VS_DIR "VS2015" )
-        ELSEIF( MSVC_VERSION STREQUAL "1916" OR MSVC_VERSION STREQUAL "1920" OR MSVC_VERSION STREQUAL "1930" OR MSVC_VERSION STREQUAL "1940" OR MSVC_VERSION GREATER_EQUAL "1930" )
-            SET( VS_DIR "VS2017" )
-        ENDIF()
-        IF( DEBUG )
-            LINK_DIRECTORIES( "${OCULUSSDK_ROOT}/LibOVR/Lib/Windows/x64/Release/${VS_DIR}" )
-        ELSE()
-            LINK_DIRECTORIES( "${OCULUSSDK_ROOT}/LibOVR/Lib/Windows/x64/Release/${VS_DIR}" )
-        ENDIF()
-        SET( OVR_LIBS LibOVR.lib )
-        ADD_DEFINITIONS( -DUSE_OCULUSSDK )
-    ENDIF()
+    find_package(OpenXR CONFIG REQUIRED)
+    SET( OPENXR_LIBS OpenXR::openxr_loader )
+    ADD_DEFINITIONS( -DRIFTRAY_HAS_OPENXR )
 
     IF( USE_ANTTWEAKBAR )
         MESSAGE("Using AntTweakBar.")
@@ -78,7 +51,6 @@ IF( WIN32 )
 
     SET( PLATFORM_LIBS
         opengl32.lib glu32.lib
-        ${OVR_LIBS}
         ${OPENXR_LIBS}
         ${ANT_LIBS}
         Winmm.lib
@@ -90,7 +62,6 @@ IF( WIN32 )
     INVOKEPYTHON( "tools/copyDLLs.py"
         ${PROJECT_SOURCE_DIR}
         ${PROJECT_BINARY_DIR}
-        "OCULUSSDK_ROOT=${OCULUSSDK_ROOT}"
         "GLEW_ROOT=${GLEW_ROOT}"
         "ANTTWEAKBAR_ROOT=${ANTTWEAKBAR_ROOT}"
         )
@@ -120,7 +91,7 @@ TARGET_LINK_LIBRARIES( Util PUBLIC glm::glm GLEW::glew glfw )
 ADD_LIBRARY( Scene       ${SCENE_SOURCE_FILES} )
 TARGET_LINK_LIBRARIES( Scene PUBLIC glm::glm GLEW::glew glfw )
 
-ADD_EXECUTABLE( ${PROJECT_NAME} src/main_glfw_ovrsdk13.cpp )
+ADD_EXECUTABLE( ${PROJECT_NAME} src/main_glfw_openxr.cpp )
 
 TARGET_LINK_LIBRARIES( ${PROJECT_NAME}
     Scene
@@ -130,6 +101,12 @@ TARGET_LINK_LIBRARIES( ${PROJECT_NAME}
     glfw
     ${PLATFORM_LIBS}
     )
+
+IF( BUILD_TESTING )
+    ADD_EXECUTABLE( MatrixFunctionsTests tests/MatrixFunctionsTests.cpp )
+    TARGET_LINK_LIBRARIES( MatrixFunctionsTests PRIVATE Util )
+    ADD_TEST( NAME MatrixFunctions COMMAND MatrixFunctionsTests )
+ENDIF()
 
 # Copy required DLLs to output directory
 ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
@@ -145,14 +122,12 @@ ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
     COMMENT "Copying DLLs to output directory"
 )
 
-IF( USE_OPENXR )
-    ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${VCPKG_INSTALLED_DIR}/x64-windows/bin/openxr_loader.dll"
-            $<TARGET_FILE_DIR:${PROJECT_NAME}>
-        COMMENT "Copying OpenXR loader to output directory"
-    )
-ENDIF()
+ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${VCPKG_INSTALLED_DIR}/x64-windows/bin/openxr_loader.dll"
+        $<TARGET_FILE_DIR:${PROJECT_NAME}>
+    COMMENT "Copying OpenXR loader to output directory"
+)
 
 # Copy shaders and textures directories for both Debug and Release builds
 ADD_CUSTOM_COMMAND(TARGET ${PROJECT_NAME} POST_BUILD

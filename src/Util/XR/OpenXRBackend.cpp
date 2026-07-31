@@ -68,6 +68,8 @@ OpenXRBackend::OpenXRBackend()
     , m_systemId(XR_NULL_SYSTEM_ID)
     , m_session(XR_NULL_HANDLE)
     , m_appSpace(XR_NULL_HANDLE)
+    , m_viewSpace(XR_NULL_HANDLE)
+    , m_environmentBlendMode(XR_ENVIRONMENT_BLEND_MODE_OPAQUE)
     , m_sessionState(XR_SESSION_STATE_UNKNOWN)
     , m_sessionRunning(false)
     , m_actionSet(XR_NULL_HANDLE)
@@ -189,6 +191,33 @@ bool OpenXRBackend::Initialize()
         Shutdown();
         return false;
     }
+
+    uint32_t blendModeCount = 0;
+    result = xrEnumerateEnvironmentBlendModes(
+        m_instance, m_systemId, kViewConfiguration,
+        0, &blendModeCount, NULL);
+    if (XR_FAILED(result) || blendModeCount == 0)
+    {
+        LOG_ERROR("%s Unable to enumerate environment blend modes: %s",
+            kOpenXRLogPrefix, DescribeResult(result).c_str());
+        Shutdown();
+        return false;
+    }
+    std::vector<XrEnvironmentBlendMode> blendModes(blendModeCount);
+    result = xrEnumerateEnvironmentBlendModes(
+        m_instance, m_systemId, kViewConfiguration,
+        blendModeCount, &blendModeCount, blendModes.data());
+    if (XR_FAILED(result))
+    {
+        Shutdown();
+        return false;
+    }
+    const std::vector<XrEnvironmentBlendMode>::const_iterator opaque =
+        std::find(
+            blendModes.begin(), blendModes.end(),
+            XR_ENVIRONMENT_BLEND_MODE_OPAQUE);
+    m_environmentBlendMode = opaque != blendModes.end()
+        ? XR_ENVIRONMENT_BLEND_MODE_OPAQUE : blendModes.front();
 
     XrSystemProperties systemProperties = { XR_TYPE_SYSTEM_PROPERTIES };
     result = xrGetSystemProperties(m_instance, m_systemId, &systemProperties);
@@ -317,6 +346,16 @@ bool OpenXRBackend::CreateReferenceSpace()
         LOG_ERROR("%s Unable to create LOCAL reference space: %s",
             kOpenXRLogPrefix, DescribeResult(result).c_str());
         m_appSpace = XR_NULL_HANDLE;
+        return false;
+    }
+    createInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW;
+    const XrResult viewResult = xrCreateReferenceSpace(
+        m_session, &createInfo, &m_viewSpace);
+    if (XR_FAILED(viewResult))
+    {
+        LOG_ERROR("%s Unable to create VIEW reference space: %s",
+            kOpenXRLogPrefix, DescribeResult(viewResult).c_str());
+        m_viewSpace = XR_NULL_HANDLE;
         return false;
     }
     return true;
@@ -1002,7 +1041,7 @@ bool OpenXRBackend::EndFrame(
 
     XrFrameEndInfo endInfo = { XR_TYPE_FRAME_END_INFO };
     endInfo.displayTime = m_frameState.predictedDisplayTime;
-    endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+    endInfo.environmentBlendMode = m_environmentBlendMode;
     endInfo.layerCount = static_cast<uint32_t>(layers.size());
     endInfo.layers = layers.empty() ? NULL : layers.data();
     const XrResult result = xrEndFrame(m_session, &endInfo);
@@ -1064,6 +1103,11 @@ void OpenXRBackend::ShutdownSession()
         xrDestroySpace(m_aimSpace);
         m_aimSpace = XR_NULL_HANDLE;
     }
+    if (m_viewSpace != XR_NULL_HANDLE)
+    {
+        xrDestroySpace(m_viewSpace);
+        m_viewSpace = XR_NULL_HANDLE;
+    }
     if (m_appSpace != XR_NULL_HANDLE)
     {
         xrDestroySpace(m_appSpace);
@@ -1097,6 +1141,7 @@ void OpenXRBackend::Shutdown()
     m_holdAction = XR_NULL_HANDLE;
     m_aimPoseAction = XR_NULL_HANDLE;
     m_systemId = XR_NULL_SYSTEM_ID;
+    m_environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
     m_getOpenGLGraphicsRequirements = NULL;
     if (m_instance != XR_NULL_HANDLE)
     {

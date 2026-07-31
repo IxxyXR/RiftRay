@@ -137,6 +137,8 @@ private:
     XrSystemId m_systemId;
     XrSession m_session;
     XrSpace m_appSpace;
+    XrSpace m_viewSpace;
+    XrEnvironmentBlendMode m_environmentBlendMode;
     XrSessionState m_sessionState;
     bool m_sessionRunning;
 

@@ -1,18 +1,21 @@
 # RiftRay
-#### [github.com/jimbo00000/RiftRay](https://github.com/jimbo00000/RiftRay)
-
-[Oculus Rift CV-1](http://www.oculus.com/) enabled viewer for the worlds of [Shadertoy](https://shadertoy.com).  
+An OpenXR viewer for the worlds of [Shadertoy](https://shadertoy.com).
+The Windows build uses the active OpenXR runtime, including SteamVR and the Meta
+PC runtime, and falls back to a monitor window when OpenXR is unavailable.
 
 
 ## Instructions  
-Press the remote's center button or the Xbox Controller's start button to enter a shadertoy. Press again to return to the gallery. Use the Xbox Controller's d-pad to adjust render resolution and cinemascope for image clarity or comfort.
+Use the keyboard, a GLFW-compatible gamepad, or OpenXR motion controllers to
+select a shader. Runtime selection is handled by SteamVR, Meta Quest Link, or
+another installed OpenXR runtime rather than by RiftRay.
 
 
 ## Features  
 - Floating AntTweakbar pane for live shader parameter editing  
 - Dynamic framebuffer scaling  
 - Vertical FOV adjustment(per developer guide section 8.5.4)   
-- Seamless VR/monitor transitions(thanks to CV1!)    
+- OpenXR stereo rendering with a desktop mirror
+- Monitor-only fallback when no OpenXR runtime or headset is available
 
 
 ## Related work
@@ -28,11 +31,20 @@ Press the remote's center button or the Xbox Controller's start button to enter 
   - [ShaderShop](http://tobyschachman.com/Shadershop/) - shader manipulation interface  
 
 ## Controls  
-Gamepad and Hydra are supported, but optional. To highlight a shader's thumbnail in the gallery, look at it or point the right Hydra controller at it.  
+Gamepads and OpenXR motion controllers are optional. The right-hand OpenXR aim
+pose controls the floating pane pointer when the active interaction profile
+provides one.
 
-#### Remote:  
-- **Center button** - Enter shader/return to gallery  
-- **Back button** - Toggle Tweakbar pane  
+#### OpenXR motion controllers:
+- **Left stick** - Movement
+- **Right stick** - Smooth or snap turning
+- **Triggers** - Move down/up
+- **A** - Enter shader/return to gallery
+- **B** - Toggle Tweakbar pane
+- **X** - Click in pane
+- **Y** - Reset world position
+- **Menu** - Reset position and yaw
+- **Right-stick click** - Reposition pane
 
 #### Keyboard:  
 - **Space** - Recenter view  
@@ -43,7 +55,7 @@ Gamepad and Hydra are supported, but optional. To highlight a shader's thumbnail
 - **Shift/Control** - Slow/fast movement  
 - **PgUp/PgDn** - Open/Close cinemascope(letterbox)  
 - **Tab** - Toggle Tweakbar pane  
-- **Backspace** - Toggle OVR Perf HUD  
+- **Backspace** - Log where to enable the runtime performance HUD
 - **\\(Backslash)** - Click in pane  
 - **/(Slash)** - Reposition pane  
 - **R** - Reset world position  

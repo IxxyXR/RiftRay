@@ -228,7 +228,7 @@ bool HudQuad::GetPaneRayIntersectionCoordinates(
     if (m_showQuadInWorld == false)
         return false;
 
-    // Standard Oculus quad layer coordinates
+    // Standard OpenXR quad layer coordinates.
     glm::vec3 pts[] = {
         glm::vec3(-.5f*m_quadSize.x, -.5f*m_quadSize.y, 0.f),
         glm::vec3( .5f*m_quadSize.x, -.5f*m_quadSize.y, 0.f),

@@ -1,22 +1,29 @@
 ## Build Instructions
 
-The project is built using the cross-platform build system [CMake](http://www.cmake.org/).
+RiftRay currently builds on Windows with CMake and a vcpkg manifest. The desktop
+OpenXR backend uses GLFW, WGL, and OpenGL; the Android graphics/lifecycle backend
+described in `OPENXR_MIGRATION.md` is follow-on work.
 
-If you have it installed, try using cmake-gui instead of the command line cmake to set build configuration variables before generating Makefiles, a Visual Studio solution, or whatever the case may be. Press the "Configure" button until you don't see red, then click "Generate".
+Install Visual Studio 2022 with the Desktop development with C++ workload, CMake,
+and vcpkg. Configure with the repository's `vcpkg.json` manifest and the vcpkg
+toolchain file.
 
 ### Windows
 
-    Create the directory build/ in project's home(alongside CMakeLists.txt)
-    Shift+right-click it in Explorer->"Open command window here"
-    build> cmake ..
-    Double-click the only .sln file in build to open it in Visual Studio
-    Right-click the GLSkeleton project in Solution Explorer, "Set as StartUp Project"
-    Press F7 to build, F5 to build and run
+From a Visual Studio Developer PowerShell:
 
-### Mac/Linux
+```powershell
+cmake -S . -B out/build/x64-Release `
+  -DCMAKE_BUILD_TYPE=Release `
+  -DCMAKE_TOOLCHAIN_FILE=C:/path/to/vcpkg/scripts/buildsystems/vcpkg.cmake
+cmake --build out/build/x64-Release
+```
 
-    $> cd RiftRay
-    $> mkdir build
-    $> cd build
-    $> cmake .. && make
-    $> ./RiftRay
+The build copies `openxr_loader.dll`, GLFW, GLEW, AntTweakBar, shaders, and
+textures beside `RiftRay3.exe`. Select SteamVR or Meta Quest Link as the active
+OpenXR runtime before starting the executable for VR. Without an available
+runtime/HMD, the same executable starts in monitor mode and records the reason in
+`RiftRay-log.txt`.
+
+The current OpenXR graphics binding is Windows-only. Other desktop platforms need
+their native OpenGL binding implementation before they can be enabled in CMake.
