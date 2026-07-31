@@ -1,12 +1,11 @@
 // MatrixFunctions.cpp
 
-#include <glm/glm.hpp>
+#include "MatrixFunctions.h"
+
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtc/type_ptr.hpp>
 
-#ifdef USE_OCULUSSDK
-#include <OVR_CAPI.h>
-#endif
+#include <cmath>
 
 glm::mat4 makeChassisMatrix_glm(
     float chassisYaw,
@@ -65,5 +64,48 @@ void GetHMDEyeRayPosAndDir(const ovrPosef& pose, glm::vec3& ro, glm::vec3& rd)
     const glm::vec4 d4 = poseMtx * lookFwd;
     ro = glm::vec3(o4.x, o4.y, o4.z);
     rd = glm::vec3(d4.x, d4.y, d4.z);
+}
+#endif
+
+#ifdef RIFTRAY_HAS_OPENXR
+/// Convert an OpenXR pose into the world transform consumed by RiftRay scenes.
+/// OpenXR and RiftRay both use right-handed coordinates with -Z forward.
+glm::mat4 makeMatrixFromXrPose(const XrPosef& pose, float worldScale)
+{
+    const XrVector3f& p = pose.position;
+    const XrQuaternionf& q = pose.orientation;
+    return glm::translate(
+        glm::mat4(1.f), worldScale * glm::vec3(p.x, p.y, p.z))
+        * glm::mat4_cast(glm::quat(q.w, q.x, q.y, q.z));
+}
+
+/// Build an OpenGL right-handed projection matrix from OpenXR's asymmetric FOV.
+glm::mat4 makeProjectionFromXrFov(const XrFovf& fov, float nearZ, float farZ)
+{
+    const float left = std::tan(fov.angleLeft);
+    const float right = std::tan(fov.angleRight);
+    const float down = std::tan(fov.angleDown);
+    const float up = std::tan(fov.angleUp);
+    const float width = right - left;
+    const float height = up - down;
+
+    glm::mat4 projection(0.f);
+    projection[0][0] = 2.f / width;
+    projection[1][1] = 2.f / height;
+    projection[2][0] = (right + left) / width;
+    projection[2][1] = (up + down) / height;
+    projection[2][2] = -(farZ + nearZ) / (farZ - nearZ);
+    projection[2][3] = -1.f;
+    projection[3][2] = -(2.f * farZ * nearZ) / (farZ - nearZ);
+    return projection;
+}
+
+void GetXrEyeRayPosAndDir(const XrPosef& pose, glm::vec3& ro, glm::vec3& rd)
+{
+    const glm::mat4 poseMatrix = makeMatrixFromXrPose(pose);
+    const glm::vec4 origin = poseMatrix * glm::vec4(0.f, 0.f, 0.f, 1.f);
+    const glm::vec4 direction = poseMatrix * glm::vec4(0.f, 0.f, -1.f, 0.f);
+    ro = glm::vec3(origin);
+    rd = glm::normalize(glm::vec3(direction));
 }
 #endif
