@@ -3,3 +3,7 @@
 html
 /tools/*.zip
 /tools/RiftRay-*
+/.vs
+/out
+/vcpkg_installed
+/ovr_sdk_win_32.0.0

@@ -7,6 +7,7 @@
 #endif
 
 #include <GL/glew.h>
+#include <GL/glu.h>
 #include <stdio.h>
 
 #include "GLUtils.h"
