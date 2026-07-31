@@ -5,12 +5,6 @@
 
 #include <fstream>
 
-#ifdef _DEBUG
-#define LOGGING_ENABLED
-#endif
-
-#ifdef LOGGING_ENABLED
-
 #  ifdef _WIN32
 #  define LOG_INFO(string, ...) Logger::Instance().Write(string , __VA_ARGS__)
 #  define LOG_ERROR(string, ...) Logger::Instance().Write(string , __VA_ARGS__)
@@ -20,11 +14,6 @@
 #  define LOG_INFO(string, args...) Logger::Instance().Write(string, ## args)
 #  define LOG_ERROR(string, args...) Logger::Instance().Write(string, ## args)
 #  endif
-
-#else
-#define LOG_INFO(string, ...)
-#define LOG_ERROR(string, ...)
-#endif
 
 /// Writes log messages to output stream.
 class Logger
