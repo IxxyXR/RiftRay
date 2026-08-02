@@ -9,4 +9,4 @@ html
 /ovr_sdk_win_32.0.0
 
 # Local Shadertoy candidates pending manual licence review.
-/shaders/licence-review/
+/shader-licence-review/
