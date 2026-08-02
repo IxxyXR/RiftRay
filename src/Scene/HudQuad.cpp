@@ -20,6 +20,7 @@ HudQuad::HudQuad()
 , m_fbo()
 , m_quadSize(1.f)
 , m_swapchainTextures()
+, m_framebufferValidated()
 , m_imageAcquired(false)
 , m_acquiredImageIndex(0)
 , m_holding(false)
@@ -91,6 +92,7 @@ bool HudQuad::initGL(
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     }
     glBindTexture(GL_TEXTURE_2D, 0);
+    m_framebufferValidated.assign(imageCount, false);
 
     m_fbo.w = width;
     m_fbo.h = height;
@@ -100,6 +102,10 @@ bool HudQuad::initGL(
     glBindRenderbuffer(GL_RENDERBUFFER, m_fbo.depth);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, width, height);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, m_fbo.id);
+    glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_fbo.depth);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
     return true;
 }
 
@@ -118,6 +124,7 @@ void HudQuad::exitGL()
         m_swapChain = XR_NULL_HANDLE;
     }
     m_swapchainTextures.clear();
+    m_framebufferValidated.clear();
     m_session = XR_NULL_HANDLE;
 }
 
@@ -175,12 +182,14 @@ bool HudQuad::_PrepareToDrawToQuad()
     glFramebufferTexture2D(
         GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
         m_swapchainTextures[m_acquiredImageIndex], 0);
-    glFramebufferRenderbuffer(
-        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, m_fbo.depth);
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+    if (!m_framebufferValidated[m_acquiredImageIndex])
     {
-        _FinalizeDrawToQuad();
-        return false;
+        if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        {
+            _FinalizeDrawToQuad();
+            return false;
+        }
+        m_framebufferValidated[m_acquiredImageIndex] = true;
     }
     glViewport(0, 0, m_fbo.w, m_fbo.h);
     return true;

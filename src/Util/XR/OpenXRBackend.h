@@ -109,6 +109,7 @@ private:
         uint32_t width;
         uint32_t height;
         std::vector<GLuint> textures;
+        std::vector<bool> framebufferValidated;
         FBO framebuffer;
         bool imageAcquired;
         uint32_t acquiredImageIndex;

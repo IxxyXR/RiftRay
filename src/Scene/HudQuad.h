@@ -52,6 +52,7 @@ protected:
     FBO m_fbo;
     glm::vec2 m_quadSize;
     std::vector<GLuint> m_swapchainTextures;
+    std::vector<bool> m_framebufferValidated;
     bool m_imageAcquired;
     uint32_t m_acquiredImageIndex;
 

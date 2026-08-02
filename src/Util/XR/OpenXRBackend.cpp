@@ -31,6 +31,7 @@ OpenXRBackend::ViewTarget::ViewTarget()
     , width(0)
     , height(0)
     , textures()
+    , framebufferValidated()
     , framebuffer()
     , imageAcquired(false)
     , acquiredImageIndex(0)
@@ -666,6 +667,7 @@ bool OpenXRBackend::CreateViewTarget(
     }
 
     const uint32_t imageCount = static_cast<uint32_t>(target.textures.size());
+    target.framebufferValidated.assign(imageCount, false);
     for (uint32_t image = 0; image < imageCount; ++image)
     {
         glBindTexture(GL_TEXTURE_2D, target.textures[image]);
@@ -684,6 +686,11 @@ bool OpenXRBackend::CreateViewTarget(
     glRenderbufferStorage(
         GL_RENDERBUFFER, GL_DEPTH_COMPONENT16, target.width, target.height);
     glBindRenderbuffer(GL_RENDERBUFFER, 0);
+    glBindFramebuffer(GL_FRAMEBUFFER, target.framebuffer.id);
+    glFramebufferRenderbuffer(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
+        target.framebuffer.depth);
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
     target.renderRect.offset.x = 0;
     target.renderRect.offset.y = 0;
     target.renderRect.extent.width = target.width;
@@ -871,16 +878,17 @@ bool OpenXRBackend::BeginView(uint32_t viewIndex)
     glFramebufferTexture2D(
         GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D,
         target.textures[target.acquiredImageIndex], 0);
-    glFramebufferRenderbuffer(
-        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER,
-        target.framebuffer.depth);
-    const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
-    if (status != GL_FRAMEBUFFER_COMPLETE)
+    if (!target.framebufferValidated[target.acquiredImageIndex])
     {
-        LOG_ERROR("%s View framebuffer is incomplete: 0x%x",
-            kOpenXRLogPrefix, status);
-        EndView(viewIndex);
-        return false;
+        const GLenum status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+        if (status != GL_FRAMEBUFFER_COMPLETE)
+        {
+            LOG_ERROR("%s View framebuffer is incomplete: 0x%x",
+                kOpenXRLogPrefix, status);
+            EndView(viewIndex);
+            return false;
+        }
+        target.framebufferValidated[target.acquiredImageIndex] = true;
     }
     return true;
 }
