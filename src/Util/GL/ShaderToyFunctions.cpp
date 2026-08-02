@@ -13,7 +13,7 @@
 // Assume program is bound
 void SetTweakUniforms(
     const ShaderToy* pST,
-    const GLuint prog)
+    bool fulldome)
 {
     if (pST == NULL)
         return;
@@ -23,14 +23,11 @@ void SetTweakUniforms(
         it != tweakVars.end();
         ++it)
     {
-        const std::string& name = it->first;
         const shaderVariable& var = it->second;
 
         const glm::vec4& tv = var.value;
 
-        const GLint uloc =
-            glGetUniformLocation(prog, name.c_str());
-            ///@todo var.uniLoc;
+        const GLint uloc = fulldome ? var.fulldomeUniLoc : var.uniLoc;
 
         switch(var.width)
         {
@@ -46,19 +43,18 @@ void SetTweakUniforms(
 // Assume program is bound
 void SetTextureUniforms(
     const ShaderToy* pST,
-    const std::map<std::string, textureChannel>* pTexLib)
+    const std::map<std::string, textureChannel>* pTexLib,
+    bool fulldome)
 {
     if (pST == NULL)
         return;
     if (pTexLib == NULL)
         return;
 
+    const shaderProgramUniforms& uniforms = pST->uniforms(fulldome);
     for (int i=0; i<4; ++i)
     {
-        std::ostringstream oss;
-        oss << "iChannel"
-            << i;
-        const GLint u_samp = glGetUniformLocation(pST->prog(), oss.str().c_str());
+        const GLint u_samp = uniforms.textureChannels[i];
         const std::string texname = pST->GetTextureFilenameAtChannel(i);
         const std::map<std::string, textureChannel>::const_iterator it = pTexLib->find(texname);
         if (it != pTexLib->end()) // key not found
