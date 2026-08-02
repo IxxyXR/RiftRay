@@ -78,6 +78,7 @@ public:
         int y,
         const ShaderWithVariables& sh,
         const BMFont& font) const;
+    virtual bool NeedsFboUpdate() const { return true; }
     virtual void DrawToFBO() const;
     virtual void DrawInScene(
         const glm::mat4& modelview,

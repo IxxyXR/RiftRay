@@ -131,7 +131,7 @@ void PaneScene::DrawScene(
         ++it)
     {
         const Pane* pP = *it;
-        if (pP == NULL)
+        if (pP == NULL || !pP->NeedsFboUpdate())
             continue;
 
         const glm::mat4 object = pP->m_tx.GetMatrix();

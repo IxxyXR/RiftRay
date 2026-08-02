@@ -41,6 +41,7 @@ public:
         ) const;
 
     virtual void RenderThumbnail() const;
+    virtual bool NeedsFboUpdate() const;
     virtual void DrawToFBO() const;
 
     virtual void SetTextureLibraryPointer(std::map<std::string, textureChannel>* pTL) { m_pTexLibrary = pTL; }

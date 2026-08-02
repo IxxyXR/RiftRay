@@ -212,18 +212,16 @@ void ShaderToyPane::RenderThumbnail() const
     unbindFBO();
 }
 
+bool ShaderToyPane::NeedsFboUpdate() const
+{
+    return m_cursorInPane && m_pGlobalState != NULL &&
+        m_pGlobalState->animatedThumbnails &&
+        !m_pGlobalState->panesAsPortals;
+}
+
 void ShaderToyPane::DrawToFBO() const
 {
-    if (m_cursorInPane == false)
-        return;
-
-    bool animated = false;
-    if (m_pGlobalState)
-    {
-        animated = m_pGlobalState->animatedThumbnails && !m_pGlobalState->panesAsPortals;
-    }
-
-    if (animated == false)
+    if (!NeedsFboUpdate())
         return;
 
     GLint bound_prog = 0;
