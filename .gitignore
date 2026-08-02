@@ -7,3 +7,6 @@ html
 /out
 /vcpkg_installed
 /ovr_sdk_win_32.0.0
+
+# Local Shadertoy candidates pending manual licence review.
+/shaders/licence-review/
