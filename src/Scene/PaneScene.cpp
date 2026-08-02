@@ -131,7 +131,7 @@ void PaneScene::DrawScene(
         ++it)
     {
         const Pane* pP = *it;
-        if (pP == NULL || !pP->NeedsFboUpdate())
+        if (pP == NULL)
             continue;
 
         const glm::mat4 object = pP->m_tx.GetMatrix();
@@ -158,7 +158,7 @@ void PaneScene::RenderPrePass() const
         ++it)
     {
         const Pane* pP = *it;
-        if (pP == NULL)
+        if (pP == NULL || !pP->NeedsFboUpdate())
             continue;
 
         bindFBO(pP->m_paneRenderBuffer);
