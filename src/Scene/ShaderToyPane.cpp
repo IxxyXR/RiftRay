@@ -46,29 +46,25 @@ void ShaderToyPane::DrawPaneAsPortal(
         return;
 
     const GLuint prog = pST->prog(fulldome);
+    const shaderProgramUniforms& uniforms = pST->uniforms(fulldome);
 
     glUseProgram(prog);
     {
-        const GLint u_mv = glGetUniformLocation(prog, "mvmtx");
-        const GLint u_pr = glGetUniformLocation(prog, "prmtx");
-        const GLint u_ob = glGetUniformLocation(prog, "obmtx");
-        glUniformMatrix4fv(u_mv, 1, false, glm::value_ptr(modelview));
-        glUniformMatrix4fv(u_pr, 1, false, glm::value_ptr(projection));
-        glUniformMatrix4fv(u_ob, 1, false, glm::value_ptr(object));
+        glUniformMatrix4fv(uniforms.modelView, 1, false, glm::value_ptr(modelview));
+        glUniformMatrix4fv(uniforms.projection, 1, false, glm::value_ptr(projection));
+        glUniformMatrix4fv(uniforms.object, 1, false, glm::value_ptr(object));
 
         // To transform only the vertices that define the quad being drawn.
-        const GLint u_pm = glGetUniformLocation(prog, "paneMatrix");
-        glUniformMatrix4fv(u_pm, 1, false, glm::value_ptr(paneMatrix));
+        glUniformMatrix4fv(
+            uniforms.paneMatrix, 1, false, glm::value_ptr(paneMatrix));
 
         // Extract viewing parameters encoded in projection matrix.
         // Stereo separation is encoded here in riftskeleton during pre-translate by half IPD.
         const float tweak = glm::value_ptr(projection)[8];
-        const GLint u_ebc = glGetUniformLocation(prog, "u_eyeballCenterTweak");
-        glUniform1f(u_ebc, tweak);
+        glUniform1f(uniforms.eyeballCenterTweak, tweak);
 
-        const GLint u_cf = glGetUniformLocation(prog, "u_fov_y_scale");
         const float cot_fovby2 = glm::value_ptr(projection)[5];
-        glUniform1f(u_cf, 1.0f/cot_fovby2);
+        glUniform1f(uniforms.fovYScale, 1.0f/cot_fovby2);
         //const float aspect = cot_fovby2 / glm::value_ptr(projection)[0];
         //glUniform3f(glGetUniformLocation(prog, "iResolution"), aspect, 1.0, 0.0);
 
@@ -81,24 +77,20 @@ void ShaderToyPane::DrawPaneAsPortal(
         const int unusedYPixels = 2 * vp[1];
         const int totalYPixels = usedYPixels + unusedYPixels;
         const float fboScale = static_cast<float>(usedYPixels) / static_cast<float>(totalYPixels);
-        const GLint u_fbs = glGetUniformLocation(prog, "u_fboScale");
-        glUniform1f(u_fbs, fboScale);
+        glUniform1f(uniforms.fboScale, fboScale);
 
-        const GLint u_res = glGetUniformLocation(prog, "iResolution");
-        glUniform3f(u_res,
+        glUniform3f(uniforms.resolution,
             static_cast<float>(vp[2]),
             static_cast<float>(vp[3]),
             0.0f);
 
-        const GLint timeUniLoc = glGetUniformLocation(prog, "iGlobalTime");
         const float t = pST->GlobalTime();
-        glUniform1f(timeUniLoc, t);
+        glUniform1f(uniforms.globalTime, t);
 
-        const GLint u_pps = glGetUniformLocation(prog, "u_panePointScale");
-        glUniform1f(u_pps, panePointScale);
+        glUniform1f(uniforms.panePointScale, panePointScale);
 
-        SetTweakUniforms(pST, prog);
-        SetTextureUniforms(pST, m_pTexLibrary);
+        SetTweakUniforms(pST, fulldome);
+        SetTextureUniforms(pST, m_pTexLibrary, fulldome);
 
         glBindVertexArray(m_vao);
         {
