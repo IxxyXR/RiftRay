@@ -30,7 +30,6 @@ struct shaderVariable {
     };
     std::string name;
     GLint uniLoc;
-    GLint fulldomeUniLoc;
     glm::vec4 initialValue;
     glm::vec4 value;
     glm::vec4 minVal;
@@ -42,7 +41,6 @@ struct shaderVariable {
     shaderVariable()
         : name()
         , uniLoc(-1)
-        , fulldomeUniLoc(-1)
         , initialValue(0.f)
         , value(0.f)
         , minVal(0.f)
@@ -52,23 +50,6 @@ struct shaderVariable {
         , varType(NoType)
     {
     }
-};
-
-struct shaderProgramUniforms
-{
-    shaderProgramUniforms();
-
-    GLint modelView;
-    GLint projection;
-    GLint object;
-    GLint paneMatrix;
-    GLint eyeballCenterTweak;
-    GLint fovYScale;
-    GLint fboScale;
-    GLint resolution;
-    GLint globalTime;
-    GLint panePointScale;
-    GLint textureChannels[4];
 };
 
 class ShaderToy
@@ -89,10 +70,6 @@ public:
     void SaveSettings() const;
 
     GLuint prog(bool fulldome=false) const { return fulldome ? m_progFulldome : m_prog; }
-    const shaderProgramUniforms& uniforms(bool fulldome=false) const
-    {
-        return fulldome ? m_fulldomeUniforms : m_uniforms;
-    }
     const std::string GetSourceFile() const { return m_sourceFile; }
     float GlobalTime() const { return static_cast<float>(m_globalTime.seconds()); }
 
@@ -103,17 +80,12 @@ protected:
     virtual GLuint _GetVsSourceId();
     virtual GLuint _GetFsSourceId(bool fulldome=false);
     virtual GLuint _MakeProgram(bool fulldome=false);
-    void _CacheUniformLocations();
-    void _CacheProgramUniformLocations(
-        GLuint program, shaderProgramUniforms& uniforms);
     virtual void _ParseVariableLine(const std::string&);
     virtual void _GetVariablesFromSourceFile(const std::string&);
 
     std::string m_sourceFile;
     GLuint m_prog;
     GLuint m_progFulldome;
-    shaderProgramUniforms m_uniforms;
-    shaderProgramUniforms m_fulldomeUniforms;
     std::map<std::string, std::string> m_varMap;
     Timer m_globalTime;
 

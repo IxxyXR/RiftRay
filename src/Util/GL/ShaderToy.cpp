@@ -16,27 +16,10 @@
 std::string ShaderToy::s_shaderDir = HOME_DATA_DIR "shaders/";
 std::string ShaderToy::s_settingsDir = HOME_DATA_DIR "settings/";
 
-shaderProgramUniforms::shaderProgramUniforms()
-    : modelView(-1)
-    , projection(-1)
-    , object(-1)
-    , paneMatrix(-1)
-    , eyeballCenterTweak(-1)
-    , fovYScale(-1)
-    , fboScale(-1)
-    , resolution(-1)
-    , globalTime(-1)
-    , panePointScale(-1)
-    , textureChannels{ -1, -1, -1, -1 }
-{
-}
-
 ShaderToy::ShaderToy(const std::string& sourceFile)
 : m_sourceFile(sourceFile)
 , m_prog(0)
 , m_progFulldome(0)
-, m_uniforms()
-, m_fulldomeUniforms()
 , m_varMap()
 , m_globalTime()
 , m_tweakVars()
@@ -104,45 +87,6 @@ GLuint ShaderToy::_MakeProgram(bool fulldome)
     return program;
 }
 
-void ShaderToy::_CacheProgramUniformLocations(
-    GLuint program, shaderProgramUniforms& uniforms)
-{
-    uniforms.modelView = glGetUniformLocation(program, "mvmtx");
-    uniforms.projection = glGetUniformLocation(program, "prmtx");
-    uniforms.object = glGetUniformLocation(program, "obmtx");
-    uniforms.paneMatrix = glGetUniformLocation(program, "paneMatrix");
-    uniforms.eyeballCenterTweak =
-        glGetUniformLocation(program, "u_eyeballCenterTweak");
-    uniforms.fovYScale = glGetUniformLocation(program, "u_fov_y_scale");
-    uniforms.fboScale = glGetUniformLocation(program, "u_fboScale");
-    uniforms.resolution = glGetUniformLocation(program, "iResolution");
-    uniforms.globalTime = glGetUniformLocation(program, "iGlobalTime");
-    uniforms.panePointScale =
-        glGetUniformLocation(program, "u_panePointScale");
-    const char* const channelNames[] = {
-        "iChannel0", "iChannel1", "iChannel2", "iChannel3"
-    };
-    for (int channel = 0; channel < 4; ++channel)
-    {
-        uniforms.textureChannels[channel] =
-            glGetUniformLocation(program, channelNames[channel]);
-    }
-}
-
-void ShaderToy::_CacheUniformLocations()
-{
-    _CacheProgramUniformLocations(m_prog, m_uniforms);
-    _CacheProgramUniformLocations(m_progFulldome, m_fulldomeUniforms);
-    for (std::map<std::string, shaderVariable>::iterator it = m_tweakVars.begin();
-        it != m_tweakVars.end(); ++it)
-    {
-        shaderVariable& variable = it->second;
-        variable.uniLoc = glGetUniformLocation(m_prog, it->first.c_str());
-        variable.fulldomeUniLoc =
-            glGetUniformLocation(m_progFulldome, it->first.c_str());
-    }
-}
-
 void ShaderToy::CompileShader()
 {
     if (m_sourceFile.empty())
@@ -160,7 +104,6 @@ void ShaderToy::CompileShader()
     std::string sett = s_settingsDir + m_sourceFile;
     sett.replace(sett.length()-4,4, "sett");
     _GetVariablesFromSourceFile(sett);
-    _CacheUniformLocations();
 }
 
 void ShaderToy::ResetVariables()

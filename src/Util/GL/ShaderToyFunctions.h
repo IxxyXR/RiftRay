@@ -22,12 +22,11 @@ class ShaderToy;
 
 void SetTweakUniforms(
     const ShaderToy* pST,
-    bool fulldome);
+    const GLuint prog);
 
 void SetTextureUniforms(
     const ShaderToy* pST,
-    const std::map<std::string, textureChannel>* pTexLib,
-    bool fulldome);
+    const std::map<std::string, textureChannel>* pTexLib);
 
 void LoadShaderToyTexturesFromDirectory(
     std::map<std::string, textureChannel>& texLib,
